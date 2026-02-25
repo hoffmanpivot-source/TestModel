@@ -30,8 +30,8 @@ const SliderRow = memo(function SliderRow({
   isPaired: boolean;
   onValueChange: (name: string, value: number) => void;
 }) {
-  const minVal = isPaired ? -0.5 : 0;
-  const maxVal = 0.5;
+  const minVal = isPaired ? -1.0 : 0;
+  const maxVal = 1.0;
 
   const handleChange = useCallback(
     (v: number) => {
