@@ -21,24 +21,8 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 OUTPUT_PATH = os.path.join(PROJECT_DIR, "assets", "models", "makehuman_base.glb")
 
-# ~80 curated targets — mobile-friendly subset
+# Curated targets — mobile-friendly subset (no ethnicity macros)
 CURATED_TARGETS = [
-    # ===== MACRODETAILS: Ethnicity — young adults only (6) =====
-    "macrodetails/african-female-young",
-    "macrodetails/african-male-young",
-    "macrodetails/asian-female-young",
-    "macrodetails/asian-male-young",
-    "macrodetails/caucasian-female-young",
-    "macrodetails/caucasian-male-young",
-
-    # ===== MACRODETAILS: Universal body types — young adult (6) =====
-    "macrodetails/universal-female-young-averagemuscle-averageweight",
-    "macrodetails/universal-female-young-averagemuscle-maxweight",
-    "macrodetails/universal-female-young-averagemuscle-minweight",
-    "macrodetails/universal-male-young-averagemuscle-averageweight",
-    "macrodetails/universal-male-young-averagemuscle-maxweight",
-    "macrodetails/universal-male-young-averagemuscle-minweight",
-
     # ===== HEAD (5) =====
     "head/head-oval",
     "head/head-round",
@@ -49,14 +33,6 @@ CURATED_TARGETS = [
     # ===== FOREHEAD (2) =====
     "forehead/forehead-nubian-incr",
     "forehead/forehead-nubian-decr",
-
-    # ===== EYES — right side (6) =====
-    "eyes/r-eye-scale-incr",
-    "eyes/r-eye-scale-decr",
-    "eyes/r-eye-trans-up",
-    "eyes/r-eye-trans-down",
-    "eyes/r-eye-corner1-up",
-    "eyes/r-eye-corner1-down",
 
     # ===== EYEBROWS (4) =====
     "eyebrows/eyebrows-angle-up",
@@ -88,14 +64,6 @@ CURATED_TARGETS = [
     "chin/chin-prominent-incr",
     "chin/chin-prominent-decr",
 
-    # ===== CHEEK — right side (2) =====
-    "cheek/r-cheek-bones-incr",
-    "cheek/r-cheek-bones-decr",
-
-    # ===== EARS — right side (2) =====
-    "ears/r-ear-scale-incr",
-    "ears/r-ear-scale-decr",
-
     # ===== NECK (2) =====
     "neck/neck-scale-horiz-incr",
     "neck/neck-scale-horiz-decr",
@@ -118,7 +86,7 @@ CURATED_TARGETS = [
     "buttocks/buttocks-volume-incr",
     "buttocks/buttocks-volume-decr",
 
-    # ===== BREAST (12) =====
+    # ===== BREAST (8) =====
     "breast/breast-dist-incr",
     "breast/breast-dist-decr",
     "breast/breast-point-incr",
@@ -127,23 +95,39 @@ CURATED_TARGETS = [
     "breast/breast-trans-down",
     "breast/breast-volume-vert-up",
     "breast/breast-volume-vert-down",
-    # Cup size (breast volume) and firmness — female young average body
-    "breast/female-young-averagemuscle-averageweight-maxcup-averagefirmness",
-    "breast/female-young-averagemuscle-averageweight-mincup-averagefirmness",
-    "breast/female-young-averagemuscle-averageweight-averagecup-maxfirmness",
-    "breast/female-young-averagemuscle-averageweight-averagecup-minfirmness",
+    # NOTE: breast-size/firmness created as composites in create_composite_breast_morphs()
+]
 
-    # ===== ARMS — right side (4) =====
-    "arms/r-upperarm-muscle-incr",
-    "arms/r-upperarm-muscle-decr",
-    "arms/r-upperarm-fat-incr",
-    "arms/r-upperarm-fat-decr",
+# Symmetric targets: merge r- and l- variants into a single shape key.
+# Format: (sk_name, r_target_spec, l_target_spec)
+SYMMETRIC_TARGETS = [
+    # ===== EYES (6) =====
+    ("eye-scale-incr", "eyes/r-eye-scale-incr", "eyes/l-eye-scale-incr"),
+    ("eye-scale-decr", "eyes/r-eye-scale-decr", "eyes/l-eye-scale-decr"),
+    ("eye-trans-up", "eyes/r-eye-trans-up", "eyes/l-eye-trans-up"),
+    ("eye-trans-down", "eyes/r-eye-trans-down", "eyes/l-eye-trans-down"),
+    ("eye-corner1-up", "eyes/r-eye-corner1-up", "eyes/l-eye-corner1-up"),
+    ("eye-corner1-down", "eyes/r-eye-corner1-down", "eyes/l-eye-corner1-down"),
 
-    # ===== LEGS — right side (4) =====
-    "legs/r-upperleg-muscle-incr",
-    "legs/r-upperleg-muscle-decr",
-    "legs/r-upperleg-fat-incr",
-    "legs/r-upperleg-fat-decr",
+    # ===== CHEEK (2) =====
+    ("cheek-bones-incr", "cheek/r-cheek-bones-incr", "cheek/l-cheek-bones-incr"),
+    ("cheek-bones-decr", "cheek/r-cheek-bones-decr", "cheek/l-cheek-bones-decr"),
+
+    # ===== EARS (2) =====
+    ("ear-scale-incr", "ears/r-ear-scale-incr", "ears/l-ear-scale-incr"),
+    ("ear-scale-decr", "ears/r-ear-scale-decr", "ears/l-ear-scale-decr"),
+
+    # ===== ARMS (4) =====
+    ("upperarm-muscle-incr", "arms/r-upperarm-muscle-incr", "arms/l-upperarm-muscle-incr"),
+    ("upperarm-muscle-decr", "arms/r-upperarm-muscle-decr", "arms/l-upperarm-muscle-decr"),
+    ("upperarm-fat-incr", "arms/r-upperarm-fat-incr", "arms/l-upperarm-fat-incr"),
+    ("upperarm-fat-decr", "arms/r-upperarm-fat-decr", "arms/l-upperarm-fat-decr"),
+
+    # ===== LEGS (4) =====
+    ("upperleg-muscle-incr", "legs/r-upperleg-muscle-incr", "legs/l-upperleg-muscle-incr"),
+    ("upperleg-muscle-decr", "legs/r-upperleg-muscle-decr", "legs/l-upperleg-muscle-decr"),
+    ("upperleg-fat-incr", "legs/r-upperleg-fat-incr", "legs/l-upperleg-fat-incr"),
+    ("upperleg-fat-decr", "legs/r-upperleg-fat-decr", "legs/l-upperleg-fat-decr"),
 ]
 
 # Rename long combo target filenames to clean shape key names
@@ -287,6 +271,51 @@ def load_target_with_remap(basemesh, target_path, sk_name, old_to_new):
     return len(offsets)
 
 
+def load_symmetric_targets(basemesh, target_dir, old_to_new):
+    """Load SYMMETRIC_TARGETS: merge r- and l- variants into single shape keys."""
+    mesh = basemesh.data
+    num_verts = len(mesh.vertices)
+
+    if not mesh.shape_keys:
+        basemesh.shape_key_add(name="Basis", from_mix=False)
+
+    loaded = 0
+    for sk_name, r_spec, l_spec in SYMMETRIC_TARGETS:
+        r_offsets = load_target_offsets(target_dir, r_spec, old_to_new, num_verts)
+        l_offsets = load_target_offsets(target_dir, l_spec, old_to_new, num_verts)
+
+        if not r_offsets and not l_offsets:
+            print(f"  MISSING both sides: {sk_name}")
+            continue
+
+        # Merge: combine offsets from both sides
+        merged = {}
+        for idx, (dx, dy, dz) in r_offsets.items():
+            merged[idx] = (dx, dy, dz)
+        for idx, (dx, dy, dz) in l_offsets.items():
+            if idx in merged:
+                # Both sides affect same vertex — add offsets
+                ox, oy, oz = merged[idx]
+                merged[idx] = (ox + dx, oy + dy, oz + dz)
+            else:
+                merged[idx] = (dx, dy, dz)
+
+        sk = basemesh.shape_key_add(name=sk_name, from_mix=False)
+        for idx, (dx, dy, dz) in merged.items():
+            base = mesh.vertices[idx].co
+            sk.data[idx].co.x = base.x + dx
+            sk.data[idx].co.y = base.y + dy
+            sk.data[idx].co.z = base.z + dz
+        sk.value = 0.0
+
+        r_count = len(r_offsets)
+        l_count = len(l_offsets)
+        print(f"  {sk_name}: {len(merged)} vertices (R:{r_count} + L:{l_count})")
+        loaded += 1
+
+    return loaded
+
+
 def add_basic_material(basemesh):
     """Add a simple skin-tone material so the mesh isn't invisible/black."""
     mat = bpy.data.materials.new(name="Skin")
@@ -302,6 +331,107 @@ def add_basic_material(basemesh):
 
     basemesh.data.materials.append(mat)
     print("  Added skin material")
+
+
+def load_target_offsets(target_dir, target_spec, old_to_new, num_verts):
+    """Load a .target(.gz) file and return remapped offsets dict without creating a shape key."""
+    target_path = resolve_target_path(target_dir, target_spec)
+    if not target_path:
+        print(f"  MISSING for composite: {target_spec}")
+        return {}
+
+    opener = gzip.open if target_path.endswith(".gz") else open
+    with opener(target_path, "rt") as f:
+        lines = f.readlines()
+
+    offsets = {}
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) >= 4:
+            old_idx = int(parts[0])
+            new_idx = old_to_new.get(old_idx)
+            if new_idx is not None and new_idx < num_verts:
+                offsets[new_idx] = (float(parts[1]), float(parts[2]), float(parts[3]))
+
+    return offsets
+
+
+def create_composite_breast_morphs(basemesh, target_dir, old_to_new):
+    """Create composite breast morphs using MakeHuman combo targets.
+
+    Uses maxcup-minfirmness for natural breast growth (forward + downward droop).
+    maxfirmness pushes breasts UP which looks wrong; minfirmness gives natural gravity.
+    """
+    mesh = basemesh.data
+    num_verts = len(mesh.vertices)
+
+    if not mesh.shape_keys:
+        basemesh.shape_key_add(name="Basis", from_mix=False)
+
+    # Load raw target offsets
+    # averagefirmness = natural middle ground (maxfirm points UP, minfirm sags DOWN)
+    maxcup = load_target_offsets(target_dir,
+        "breast/female-young-averagemuscle-averageweight-maxcup-averagefirmness",
+        old_to_new, num_verts)
+    mincup = load_target_offsets(target_dir,
+        "breast/female-young-averagemuscle-averageweight-mincup-averagefirmness",
+        old_to_new, num_verts)
+    maxfirm = load_target_offsets(target_dir,
+        "breast/female-young-averagemuscle-averageweight-averagecup-maxfirmness",
+        old_to_new, num_verts)
+    minfirm = load_target_offsets(target_dir,
+        "breast/female-young-averagemuscle-averageweight-averagecup-minfirmness",
+        old_to_new, num_verts)
+
+    # Composite definitions: (name, [(offsets_dict, scale), ...])
+    # v0.0.13 used 0.25 scale and user said "almost looks like a breast" — just needs more volume
+    composites = [
+        ("breast-size-incr", [
+            (maxcup, 0.8),        # averagefirmness = natural shape, higher scale for volume
+        ]),
+        ("breast-size-decr", [
+            (mincup, 0.8),        # shrink/flatten
+        ]),
+        ("breast-firmness-incr", [
+            (maxfirm, 0.6),       # perky/firm (lifts up)
+        ]),
+        ("breast-firmness-decr", [
+            (minfirm, 0.6),       # saggy/droopy
+        ]),
+    ]
+
+    created = 0
+    for sk_name, components in composites:
+        # Merge all vertex indices from all components
+        all_indices = set()
+        for offsets, _ in components:
+            all_indices.update(offsets.keys())
+
+        sk = basemesh.shape_key_add(name=sk_name, from_mix=False)
+        applied = 0
+        for idx in all_indices:
+            dx, dy, dz = 0.0, 0.0, 0.0
+            for offsets, scale in components:
+                if idx in offsets:
+                    ox, oy, oz = offsets[idx]
+                    dx += ox * scale
+                    dy += oy * scale
+                    dz += oz * scale
+            if abs(dx) > 1e-7 or abs(dy) > 1e-7 or abs(dz) > 1e-7:
+                base = mesh.vertices[idx].co
+                sk.data[idx].co.x = base.x + dx
+                sk.data[idx].co.y = base.y + dy
+                sk.data[idx].co.z = base.z + dz
+                applied += 1
+
+        sk.value = 0.0
+        print(f"  {sk_name}: {applied} vertices")
+        created += 1
+
+    return created
 
 
 def main():
@@ -396,6 +526,19 @@ def main():
             print(f"  FAILED: {sk_name}: {e}")
 
     print(f"\nLoaded {loaded}/{len(CURATED_TARGETS)} targets")
+
+    # STEP 4.5: Create composite breast morphs (cupsize + firmness blended)
+    print("\nStep 4.5: Creating composite breast morphs...")
+    breast_count = create_composite_breast_morphs(basemesh, target_dir, old_to_new)
+    loaded += breast_count
+    print(f"  Created {breast_count} composite breast morphs")
+
+    # STEP 4.6: Load symmetric targets (merge r- and l- into single shape keys)
+    print("\nStep 4.6: Loading symmetric targets...")
+    sym_count = load_symmetric_targets(basemesh, target_dir, old_to_new)
+    loaded += sym_count
+    print(f"  Loaded {sym_count} symmetric targets")
+
     if basemesh.data.shape_keys:
         num_keys = len(basemesh.data.shape_keys.key_blocks) - 1
         print(f"Total shape keys: {num_keys}")
