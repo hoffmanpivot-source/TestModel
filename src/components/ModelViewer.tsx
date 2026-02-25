@@ -48,10 +48,10 @@ export function ModelViewer({ modelUri, onModelLoaded, onError }: Props) {
     targetZ: 0,
   });
 
-  // Touch tracking for pinch zoom
-  const touchesRef = useRef<{ x: number; y: number }[]>([]);
+  // Touch tracking for pinch zoom and 2-finger pan
   const lastPinchDistRef = useRef<number>(0);
-  const isPinchingRef = useRef(false);
+  const lastMidpointRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const isTwoFingerRef = useRef(false);
 
   const updateCamera = useCallback(() => {
     const camera = cameraRef.current;
@@ -71,7 +71,7 @@ export function ModelViewer({ modelUri, onModelLoaded, onError }: Props) {
     camera.lookAt(o.targetX, o.targetY, o.targetZ);
   }, []);
 
-  // PanResponder for orbit (1 finger) and zoom (2 fingers)
+  // PanResponder: 1 finger = orbit, 2 fingers = pinch zoom + pan
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
@@ -82,12 +82,16 @@ export function ModelViewer({ modelUri, onModelLoaded, onError }: Props) {
       ) => {
         const touches = evt.nativeEvent.touches;
         if (touches && touches.length === 2) {
-          isPinchingRef.current = true;
+          isTwoFingerRef.current = true;
           const dx = touches[1].pageX - touches[0].pageX;
           const dy = touches[1].pageY - touches[0].pageY;
           lastPinchDistRef.current = Math.sqrt(dx * dx + dy * dy);
+          lastMidpointRef.current = {
+            x: (touches[0].pageX + touches[1].pageX) / 2,
+            y: (touches[0].pageY + touches[1].pageY) / 2,
+          };
         } else {
-          isPinchingRef.current = false;
+          isTwoFingerRef.current = false;
         }
       },
       onPanResponderMove: (
@@ -96,24 +100,45 @@ export function ModelViewer({ modelUri, onModelLoaded, onError }: Props) {
       ) => {
         const touches = evt.nativeEvent.touches;
 
-        // Pinch zoom (2 fingers)
+        // Two fingers: pinch zoom + pan
         if (touches && touches.length === 2) {
-          isPinchingRef.current = true;
+          isTwoFingerRef.current = true;
+
           const dx = touches[1].pageX - touches[0].pageX;
           const dy = touches[1].pageY - touches[0].pageY;
           const dist = Math.sqrt(dx * dx + dy * dy);
+          const midX = (touches[0].pageX + touches[1].pageX) / 2;
+          const midY = (touches[0].pageY + touches[1].pageY) / 2;
 
           if (lastPinchDistRef.current > 0) {
-            const scale = lastPinchDistRef.current / dist;
-            orbitRef.current.radius *= scale;
+            // Pinch zoom
+            const zoomScale = lastPinchDistRef.current / dist;
+            orbitRef.current.radius *= zoomScale;
+
+            // Pan (midpoint movement)
+            const panDx = midX - lastMidpointRef.current.x;
+            const panDy = midY - lastMidpointRef.current.y;
+            const panSensitivity = 0.003 * orbitRef.current.radius;
+            const o = orbitRef.current;
+            // Pan in camera-local X/Y
+            const right = new THREE.Vector3(
+              Math.cos(o.theta),
+              0,
+              -Math.sin(o.theta)
+            );
+            o.targetX -= right.x * panDx * panSensitivity;
+            o.targetZ -= right.z * panDx * panSensitivity;
+            o.targetY += panDy * panSensitivity;
+
             updateCamera();
           }
           lastPinchDistRef.current = dist;
+          lastMidpointRef.current = { x: midX, y: midY };
           return;
         }
 
         // Single finger: rotate (orbit)
-        if (!isPinchingRef.current && gestureState.numberActiveTouches === 1) {
+        if (!isTwoFingerRef.current && gestureState.numberActiveTouches === 1) {
           const sensitivity = 0.005;
           orbitRef.current.theta -= gestureState.dx * sensitivity;
           orbitRef.current.phi -= gestureState.dy * sensitivity;
@@ -121,7 +146,7 @@ export function ModelViewer({ modelUri, onModelLoaded, onError }: Props) {
         }
       },
       onPanResponderRelease: () => {
-        isPinchingRef.current = false;
+        isTwoFingerRef.current = false;
         lastPinchDistRef.current = 0;
       },
     })
@@ -156,8 +181,28 @@ export function ModelViewer({ modelUri, onModelLoaded, onError }: Props) {
                 scene.remove(modelRef.current);
               }
 
-              // Center and scale the model
-              const box = new THREE.Box3().setFromObject(model);
+              // Center and scale from position attribute directly
+              // (Box3.setFromObject inflates bbox with morph target extremes)
+              const box = new THREE.Box3();
+              model.traverse((child) => {
+                if (child instanceof THREE.Mesh && child.geometry) {
+                  const pos = child.geometry.getAttribute("position");
+                  if (pos) {
+                    const tempBox = new THREE.Box3();
+                    child.updateMatrixWorld(true);
+                    for (let i = 0; i < pos.count; i++) {
+                      const v = new THREE.Vector3(
+                        pos.getX(i),
+                        pos.getY(i),
+                        pos.getZ(i)
+                      );
+                      v.applyMatrix4(child.matrixWorld);
+                      tempBox.expandByPoint(v);
+                    }
+                    box.union(tempBox);
+                  }
+                }
+              });
               const center = box.getCenter(new THREE.Vector3());
               const size = box.getSize(new THREE.Vector3());
               const maxDim = Math.max(size.x, size.y, size.z);
