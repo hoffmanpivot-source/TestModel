@@ -402,11 +402,84 @@ def main():
     print(f"Final vertex count: {len(basemesh.data.vertices)}")
 
     # STEP 5: Zero all shape key values so GLB exports with weights=[0,0,...]
-    # (Blender exports current values as default weights in the GLB)
     if basemesh.data.shape_keys:
         for sk in basemesh.data.shape_keys.key_blocks[1:]:
             sk.value = 0.0
         print("Zeroed all shape key values for export")
+
+    # STEP 5.5: Bake subdivided shape keys
+    # Add SubSurf, evaluate each shape key via depsgraph, replace shape key
+    # data with subdivided positions, then remove modifier.
+    print("\nStep 5.5: Baking subdivided shape keys...")
+    bpy.context.view_layer.objects.active = basemesh
+    basemesh.select_set(True)
+
+    subsurf = basemesh.modifiers.new(name="Subdivision", type='SUBSURF')
+    subsurf.levels = 1
+    subsurf.render_levels = 1
+
+    # Zero all keys, evaluate subdivided Basis
+    for sk in basemesh.data.shape_keys.key_blocks[1:]:
+        sk.value = 0.0
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    eval_obj = basemesh.evaluated_get(depsgraph)
+    eval_mesh = eval_obj.to_mesh()
+    subdiv_vcount = len(eval_mesh.vertices)
+    print(f"  Subdivided vertex count: {subdiv_vcount}")
+
+    # Capture basis positions
+    import numpy as np
+    basis_co = np.zeros(subdiv_vcount * 3)
+    eval_mesh.vertices.foreach_get("co", basis_co)
+    eval_obj.to_mesh_clear()
+
+    # For each shape key, set value=1, evaluate, capture deltas
+    sk_data = {}
+    for sk in basemesh.data.shape_keys.key_blocks[1:]:
+        sk.value = 1.0
+        depsgraph.update()
+        eval_obj = basemesh.evaluated_get(depsgraph)
+        eval_mesh = eval_obj.to_mesh()
+        sk_co = np.zeros(subdiv_vcount * 3)
+        eval_mesh.vertices.foreach_get("co", sk_co)
+        eval_obj.to_mesh_clear()
+        sk.value = 0.0
+
+        # Compute deltas
+        deltas = sk_co - basis_co
+        nonzero = np.count_nonzero(np.abs(deltas.reshape(-1, 3)).max(axis=1) > 1e-6)
+        sk_data[sk.name] = deltas
+        print(f"  {sk.name}: {nonzero} affected vertices (subdivided)")
+
+    # Now remove modifier and all shape keys
+    basemesh.modifiers.remove(subsurf)
+
+    # Remove existing shape keys
+    while basemesh.data.shape_keys and len(basemesh.data.shape_keys.key_blocks) > 1:
+        basemesh.shape_key_remove(basemesh.data.shape_keys.key_blocks[-1])
+    if basemesh.data.shape_keys:
+        basemesh.shape_key_remove(basemesh.data.shape_keys.key_blocks[0])
+
+    # Apply subdivision to the base mesh (no shape keys now)
+    subsurf = basemesh.modifiers.new(name="Subdivision", type='SUBSURF')
+    subsurf.levels = 1
+    subsurf.render_levels = 1
+    bpy.ops.object.modifier_apply(modifier="Subdivision")
+    print(f"  Applied subdivision: {len(basemesh.data.vertices)} vertices")
+
+    # Re-add shape keys with subdivided data
+    basemesh.shape_key_add(name="Basis", from_mix=False)
+    for sk_name, deltas in sk_data.items():
+        sk = basemesh.shape_key_add(name=sk_name, from_mix=False)
+        deltas_reshaped = deltas.reshape(-1, 3)
+        for i in range(len(basemesh.data.vertices)):
+            if abs(deltas_reshaped[i][0]) > 1e-6 or abs(deltas_reshaped[i][1]) > 1e-6 or abs(deltas_reshaped[i][2]) > 1e-6:
+                sk.data[i].co.x = basemesh.data.vertices[i].co.x + deltas_reshaped[i][0]
+                sk.data[i].co.y = basemesh.data.vertices[i].co.y + deltas_reshaped[i][1]
+                sk.data[i].co.z = basemesh.data.vertices[i].co.z + deltas_reshaped[i][2]
+        sk.value = 0.0
+
+    print(f"  Rebuilt {len(sk_data)} shape keys on subdivided mesh")
 
     # STEP 6: Smooth normals for better appearance
     bpy.context.view_layer.objects.active = basemesh
@@ -414,7 +487,7 @@ def main():
     bpy.ops.object.shade_smooth()
     print("Applied smooth shading")
 
-    # STEP 6: Export
+    # STEP 7: Export
     os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
     bpy.ops.export_scene.gltf(
         filepath=OUTPUT_PATH,
@@ -422,7 +495,7 @@ def main():
         use_selection=False,
         export_apply=False,
         export_morph=True,
-        export_morph_normal=True,
+        export_morph_normal=False,
         export_morph_tangent=False,
         export_yup=True,
     )
