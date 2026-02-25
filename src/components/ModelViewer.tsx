@@ -1,11 +1,8 @@
 import React, { useCallback, useEffect, useRef } from "react";
-import { StyleSheet, View, Text, Platform } from "react-native";
+import { StyleSheet, View, Text } from "react-native";
 import { GLView, ExpoWebGLRenderingContext } from "expo-gl";
 import { Renderer } from "expo-three";
 import * as THREE from "three";
-import { Asset } from "expo-asset";
-
-// GLTFLoader for loading .glb files
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 interface Props {
@@ -21,9 +18,98 @@ export function ModelViewer({ modelUri, onModelLoaded, onError }: Props) {
   const modelRef = useRef<THREE.Group | null>(null);
   const animRef = useRef<number>(0);
   const rotationRef = useRef({ y: 0 });
+  const glRef = useRef<ExpoWebGLRenderingContext | null>(null);
+  const contextReadyRef = useRef(false);
+  const loadedUriRef = useRef<string | null>(null);
+
+  const loadGLBModel = useCallback(
+    (scene: THREE.Scene, camera: THREE.PerspectiveCamera, uri: string) => {
+      console.log("[ModelViewer] Loading GLB from:", uri);
+
+      const loader = new GLTFLoader();
+
+      // For React Native, we need to load via fetch + ArrayBuffer
+      fetch(uri)
+        .then((res) => {
+          console.log("[ModelViewer] Fetch response status:", res.status);
+          return res.arrayBuffer();
+        })
+        .then((buffer) => {
+          console.log("[ModelViewer] Got ArrayBuffer, size:", buffer.byteLength);
+
+          loader.parse(
+            buffer,
+            "",
+            (gltf) => {
+              console.log("[ModelViewer] GLTF parsed successfully");
+              const model = gltf.scene;
+
+              // Remove existing model if any
+              if (modelRef.current) {
+                scene.remove(modelRef.current);
+              }
+
+              // Center and scale the model
+              const box = new THREE.Box3().setFromObject(model);
+              const center = box.getCenter(new THREE.Vector3());
+              const size = box.getSize(new THREE.Vector3());
+              const maxDim = Math.max(size.x, size.y, size.z);
+              const scale = 2 / maxDim;
+
+              console.log("[ModelViewer] Model size:", size, "scale:", scale);
+
+              model.scale.setScalar(scale);
+              model.position.sub(center.multiplyScalar(scale));
+              model.position.y += size.y * scale * 0.5;
+
+              // Log morph target info
+              let morphCount = 0;
+              model.traverse((child) => {
+                if (child instanceof THREE.Mesh) {
+                  if (child.morphTargetDictionary) {
+                    const names = Object.keys(child.morphTargetDictionary);
+                    console.log(
+                      `[ModelViewer] Mesh "${child.name}" has ${names.length} morph targets:`,
+                      names.slice(0, 10).join(", "),
+                      names.length > 10 ? "..." : ""
+                    );
+                    morphCount += names.length;
+                  }
+                  child.morphTargetInfluences =
+                    child.morphTargetInfluences || [];
+                }
+              });
+              console.log("[ModelViewer] Total morph targets:", morphCount);
+
+              scene.add(model);
+              modelRef.current = model;
+
+              // Adjust camera
+              camera.position.set(0, size.y * scale * 0.5, 3);
+              camera.lookAt(0, size.y * scale * 0.5, 0);
+
+              onModelLoaded(model);
+            },
+            (err) => {
+              console.error("[ModelViewer] GLTF parse error:", err);
+              onError(`GLTF parse error: ${err}`);
+              addDemoModel(scene, camera);
+            }
+          );
+        })
+        .catch((err) => {
+          console.error("[ModelViewer] Fetch error:", err);
+          onError(`Fetch error: ${err}`);
+          addDemoModel(scene, camera);
+        });
+    },
+    [onModelLoaded, onError]
+  );
 
   const onContextCreate = useCallback(
-    async (gl: ExpoWebGLRenderingContext) => {
+    (gl: ExpoWebGLRenderingContext) => {
+      glRef.current = gl;
+
       // Scene
       const scene = new THREE.Scene();
       scene.background = new THREE.Color(0x222222);
@@ -62,15 +148,14 @@ export function ModelViewer({ modelUri, onModelLoaded, onError }: Props) {
       renderer.setPixelRatio(1);
       rendererRef.current = renderer;
 
-      // Load model if URI provided
-      if (modelUri) {
-        try {
-          await loadModel(scene, camera, modelUri);
-        } catch (err) {
-          onError(err instanceof Error ? err.message : String(err));
-          addDemoModel(scene, camera);
-        }
-      } else {
+      contextReadyRef.current = true;
+
+      // If modelUri is already available, load it now
+      if (modelUri && loadedUriRef.current !== modelUri) {
+        loadedUriRef.current = modelUri;
+        loadGLBModel(scene, camera, modelUri);
+      } else if (!modelUri) {
+        console.log("[ModelViewer] No model URI yet, showing demo");
         addDemoModel(scene, camera);
       }
 
@@ -78,7 +163,6 @@ export function ModelViewer({ modelUri, onModelLoaded, onError }: Props) {
       const animate = () => {
         animRef.current = requestAnimationFrame(animate);
 
-        // Slow auto-rotation
         if (modelRef.current) {
           rotationRef.current.y += 0.003;
           modelRef.current.rotation.y = rotationRef.current.y;
@@ -90,178 +174,60 @@ export function ModelViewer({ modelUri, onModelLoaded, onError }: Props) {
 
       animate();
     },
-    [modelUri]
+    [modelUri, loadGLBModel]
   );
 
-  const loadModel = async (
-    scene: THREE.Scene,
-    camera: THREE.PerspectiveCamera,
-    uri: string
-  ) => {
-    return new Promise<void>((resolve, reject) => {
-      const loader = new GLTFLoader();
+  // React to modelUri changes AFTER GL context is ready (load only once)
+  useEffect(() => {
+    if (
+      modelUri &&
+      loadedUriRef.current !== modelUri &&
+      contextReadyRef.current &&
+      sceneRef.current &&
+      cameraRef.current
+    ) {
+      console.log("[ModelViewer] modelUri changed, loading model");
+      loadedUriRef.current = modelUri;
+      loadGLBModel(sceneRef.current, cameraRef.current, modelUri);
+    }
+  }, [modelUri, loadGLBModel]);
 
-      loader.load(
-        uri,
-        (gltf) => {
-          const model = gltf.scene;
-
-          // Center and scale the model
-          const box = new THREE.Box3().setFromObject(model);
-          const center = box.getCenter(new THREE.Vector3());
-          const size = box.getSize(new THREE.Vector3());
-          const maxDim = Math.max(size.x, size.y, size.z);
-          const scale = 2 / maxDim;
-
-          model.scale.setScalar(scale);
-          model.position.sub(center.multiplyScalar(scale));
-          model.position.y += size.y * scale * 0.5;
-
-          // Enable morph targets on all meshes
-          model.traverse((child) => {
-            if (child instanceof THREE.Mesh) {
-              child.morphTargetInfluences =
-                child.morphTargetInfluences || [];
-            }
-          });
-
-          scene.add(model);
-          modelRef.current = model;
-
-          // Adjust camera
-          camera.position.set(0, size.y * scale * 0.5, 3);
-          camera.lookAt(0, size.y * scale * 0.5, 0);
-
-          onModelLoaded(model);
-          resolve();
-        },
-        undefined,
-        (err) => {
-          reject(new Error(`Failed to load model: ${err}`));
-        }
-      );
-    });
-  };
-
-  /**
-   * Create a demo model with programmatic morph targets
-   * so the app works without a MakeHuman GLB.
-   */
   const addDemoModel = (
     scene: THREE.Scene,
     camera: THREE.PerspectiveCamera
   ) => {
-    // Base geometry — a sphere with morph targets
     const baseGeometry = new THREE.SphereGeometry(0.5, 32, 32);
     const positionAttr = baseGeometry.getAttribute("position");
     const count = positionAttr.count;
 
-    // Create several morph targets that simulate MakeHuman-like modifications
     const morphAttributes: Record<string, THREE.Float32BufferAttribute> = {};
 
-    // head-width: stretch X
+    // head-width
     const headWidth = new Float32Array(count * 3);
     for (let i = 0; i < count; i++) {
       headWidth[i * 3] = positionAttr.getX(i) * 0.5;
-      headWidth[i * 3 + 1] = 0;
-      headWidth[i * 3 + 2] = 0;
     }
     morphAttributes["head-width"] = new THREE.Float32BufferAttribute(headWidth, 3);
 
-    // head-height: stretch Y
+    // head-height
     const headHeight = new Float32Array(count * 3);
     for (let i = 0; i < count; i++) {
-      headHeight[i * 3] = 0;
       headHeight[i * 3 + 1] = positionAttr.getY(i) * 0.5;
-      headHeight[i * 3 + 2] = 0;
     }
     morphAttributes["head-height"] = new THREE.Float32BufferAttribute(headHeight, 3);
 
-    // nose-length: push forward vertices near front-center
+    // nose-length
     const noseLength = new Float32Array(count * 3);
     for (let i = 0; i < count; i++) {
       const x = positionAttr.getX(i);
       const y = positionAttr.getY(i);
       const z = positionAttr.getZ(i);
-      const isNoseArea = z > 0.3 && Math.abs(x) < 0.15 && y > -0.1 && y < 0.2;
-      noseLength[i * 3 + 2] = isNoseArea ? 0.3 : 0;
+      noseLength[i * 3 + 2] =
+        z > 0.3 && Math.abs(x) < 0.15 && y > -0.1 && y < 0.2 ? 0.3 : 0;
     }
     morphAttributes["nose-length"] = new THREE.Float32BufferAttribute(noseLength, 3);
 
-    // eye-size: expand area near eye positions
-    const eyeSize = new Float32Array(count * 3);
-    for (let i = 0; i < count; i++) {
-      const x = positionAttr.getX(i);
-      const y = positionAttr.getY(i);
-      const z = positionAttr.getZ(i);
-      const isEyeArea =
-        z > 0.2 && (Math.abs(x - 0.15) < 0.1 || Math.abs(x + 0.15) < 0.1) && Math.abs(y - 0.15) < 0.1;
-      if (isEyeArea) {
-        eyeSize[i * 3] = x * 0.2;
-        eyeSize[i * 3 + 1] = y * 0.2;
-        eyeSize[i * 3 + 2] = z * 0.2;
-      }
-    }
-    morphAttributes["eye-size"] = new THREE.Float32BufferAttribute(eyeSize, 3);
-
-    // jaw-width: widen lower portion
-    const jawWidth = new Float32Array(count * 3);
-    for (let i = 0; i < count; i++) {
-      const x = positionAttr.getX(i);
-      const y = positionAttr.getY(i);
-      if (y < 0) {
-        jawWidth[i * 3] = x * 0.4 * Math.abs(y);
-      }
-    }
-    morphAttributes["jaw-width"] = new THREE.Float32BufferAttribute(jawWidth, 3);
-
-    // mouth-width
-    const mouthWidth = new Float32Array(count * 3);
-    for (let i = 0; i < count; i++) {
-      const x = positionAttr.getX(i);
-      const y = positionAttr.getY(i);
-      const z = positionAttr.getZ(i);
-      const isMouthArea = z > 0.3 && Math.abs(y + 0.1) < 0.1 && Math.abs(x) < 0.2;
-      if (isMouthArea) {
-        mouthWidth[i * 3] = x * 0.5;
-      }
-    }
-    morphAttributes["mouth-width"] = new THREE.Float32BufferAttribute(mouthWidth, 3);
-
-    // chin-prominence
-    const chinProm = new Float32Array(count * 3);
-    for (let i = 0; i < count; i++) {
-      const y = positionAttr.getY(i);
-      const z = positionAttr.getZ(i);
-      if (y < -0.3 && z > 0.1) {
-        chinProm[i * 3 + 2] = 0.3;
-      }
-    }
-    morphAttributes["chin-prominence"] = new THREE.Float32BufferAttribute(chinProm, 3);
-
-    // forehead-height
-    const foreheadH = new Float32Array(count * 3);
-    for (let i = 0; i < count; i++) {
-      const y = positionAttr.getY(i);
-      if (y > 0.3) {
-        foreheadH[i * 3 + 1] = 0.3;
-      }
-    }
-    morphAttributes["forehead-height"] = new THREE.Float32BufferAttribute(foreheadH, 3);
-
-    // ear-size
-    const earSize = new Float32Array(count * 3);
-    for (let i = 0; i < count; i++) {
-      const x = positionAttr.getX(i);
-      const y = positionAttr.getY(i);
-      const isEarArea = Math.abs(Math.abs(x) - 0.45) < 0.1 && Math.abs(y - 0.05) < 0.15;
-      if (isEarArea) {
-        earSize[i * 3] = x > 0 ? 0.2 : -0.2;
-      }
-    }
-    morphAttributes["ear-size"] = new THREE.Float32BufferAttribute(earSize, 3);
-
-    // macro-weight: inflate overall
+    // macro-weight
     const macroWeight = new Float32Array(count * 3);
     for (let i = 0; i < count; i++) {
       macroWeight[i * 3] = positionAttr.getX(i) * 0.3;
@@ -270,25 +236,8 @@ export function ModelViewer({ modelUri, onModelLoaded, onError }: Props) {
     }
     morphAttributes["macro-weight"] = new THREE.Float32BufferAttribute(macroWeight, 3);
 
-    // macro-muscle
-    const macroMuscle = new Float32Array(count * 3);
-    for (let i = 0; i < count; i++) {
-      macroMuscle[i * 3] = positionAttr.getX(i) * 0.2;
-      macroMuscle[i * 3 + 2] = positionAttr.getZ(i) * 0.15;
-    }
-    morphAttributes["macro-muscle"] = new THREE.Float32BufferAttribute(macroMuscle, 3);
-
-    // macro-age
-    const macroAge = new Float32Array(count * 3);
-    for (let i = 0; i < count; i++) {
-      macroAge[i * 3 + 1] = positionAttr.getY(i) * -0.1;
-    }
-    morphAttributes["macro-age"] = new THREE.Float32BufferAttribute(macroAge, 3);
-
-    // Set morph attributes
     baseGeometry.morphAttributes.position = Object.values(morphAttributes);
 
-    // Material
     const material = new THREE.MeshStandardMaterial({
       color: 0xccaa88,
       roughness: 0.6,

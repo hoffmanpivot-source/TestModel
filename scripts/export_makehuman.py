@@ -1,213 +1,393 @@
 """
-Export a MakeHuman base model with all shape keys to GLB.
+Export a MakeHuman base model with curated shape keys to GLB.
+
+Strategy: Create basemesh -> remove helper geometry -> THEN add shape keys.
+This avoids the problem of shape key vertex indices being broken by
+deleting vertices after shape keys exist.
 
 Requirements:
-  - Blender 3.6+ with MPFB2 addon installed
-  - Run: blender --background --python scripts/export_makehuman.py
+  - Blender 5.0+ with MPFB2 addon installed
+  - Run: /Applications/Blender.app/Contents/MacOS/Blender --background --python scripts/export_makehuman.py
 
 Output: assets/models/makehuman_base.glb
 """
 
 import bpy
+import bmesh
 import os
-import sys
+import gzip
 
-# Output path
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 OUTPUT_PATH = os.path.join(PROJECT_DIR, "assets", "models", "makehuman_base.glb")
 
+# ~80 curated targets — mobile-friendly subset
+CURATED_TARGETS = [
+    # ===== MACRODETAILS: Ethnicity — young adults only (6) =====
+    "macrodetails/african-female-young",
+    "macrodetails/african-male-young",
+    "macrodetails/asian-female-young",
+    "macrodetails/asian-male-young",
+    "macrodetails/caucasian-female-young",
+    "macrodetails/caucasian-male-young",
+
+    # ===== MACRODETAILS: Universal body types — young adult (6) =====
+    "macrodetails/universal-female-young-averagemuscle-averageweight",
+    "macrodetails/universal-female-young-averagemuscle-maxweight",
+    "macrodetails/universal-female-young-averagemuscle-minweight",
+    "macrodetails/universal-male-young-averagemuscle-averageweight",
+    "macrodetails/universal-male-young-averagemuscle-maxweight",
+    "macrodetails/universal-male-young-averagemuscle-minweight",
+
+    # ===== HEAD (5) =====
+    "head/head-oval",
+    "head/head-round",
+    "head/head-square",
+    "head/head-scale-horiz-incr",
+    "head/head-scale-horiz-decr",
+
+    # ===== FOREHEAD (2) =====
+    "forehead/forehead-nubian-incr",
+    "forehead/forehead-nubian-decr",
+
+    # ===== EYES — right side (6) =====
+    "eyes/r-eye-scale-incr",
+    "eyes/r-eye-scale-decr",
+    "eyes/r-eye-trans-up",
+    "eyes/r-eye-trans-down",
+    "eyes/r-eye-corner1-up",
+    "eyes/r-eye-corner1-down",
+
+    # ===== EYEBROWS (4) =====
+    "eyebrows/eyebrows-angle-up",
+    "eyebrows/eyebrows-angle-down",
+    "eyebrows/eyebrows-trans-up",
+    "eyebrows/eyebrows-trans-down",
+
+    # ===== NOSE (8) =====
+    "nose/nose-scale-horiz-incr",
+    "nose/nose-scale-horiz-decr",
+    "nose/nose-scale-vert-incr",
+    "nose/nose-scale-vert-decr",
+    "nose/nose-hump-incr",
+    "nose/nose-hump-decr",
+    "nose/nose-point-up",
+    "nose/nose-point-down",
+
+    # ===== MOUTH (6) =====
+    "mouth/mouth-scale-horiz-incr",
+    "mouth/mouth-scale-horiz-decr",
+    "mouth/mouth-trans-up",
+    "mouth/mouth-trans-down",
+    "mouth/mouth-upperlip-volume-incr",
+    "mouth/mouth-lowerlip-volume-incr",
+
+    # ===== CHIN (4) =====
+    "chin/chin-width-incr",
+    "chin/chin-width-decr",
+    "chin/chin-prominent-incr",
+    "chin/chin-prominent-decr",
+
+    # ===== CHEEK — right side (2) =====
+    "cheek/r-cheek-bones-incr",
+    "cheek/r-cheek-bones-decr",
+
+    # ===== EARS — right side (2) =====
+    "ears/r-ear-scale-incr",
+    "ears/r-ear-scale-decr",
+
+    # ===== NECK (2) =====
+    "neck/neck-scale-horiz-incr",
+    "neck/neck-scale-horiz-decr",
+
+    # ===== TORSO (4) =====
+    "torso/torso-scale-horiz-incr",
+    "torso/torso-scale-horiz-decr",
+    "torso/torso-vshape-incr",
+    "torso/torso-vshape-decr",
+
+    # ===== STOMACH (2) =====
+    "stomach/stomach-tone-incr",
+    "stomach/stomach-tone-decr",
+
+    # ===== HIP (2) =====
+    "hip/hip-scale-horiz-incr",
+    "hip/hip-scale-horiz-decr",
+
+    # ===== BUTTOCKS (2) =====
+    "buttocks/buttocks-volume-incr",
+    "buttocks/buttocks-volume-decr",
+
+    # ===== BREAST (6) =====
+    "breast/breast-dist-incr",
+    "breast/breast-dist-decr",
+    "breast/breast-trans-up",
+    "breast/breast-trans-down",
+    "breast/breast-volume-vert-up",
+    "breast/breast-volume-vert-down",
+
+    # ===== ARMS — right side (4) =====
+    "arms/r-upperarm-muscle-incr",
+    "arms/r-upperarm-muscle-decr",
+    "arms/r-upperarm-fat-incr",
+    "arms/r-upperarm-fat-decr",
+
+    # ===== LEGS — right side (4) =====
+    "legs/r-upperleg-muscle-incr",
+    "legs/r-upperleg-muscle-decr",
+    "legs/r-upperleg-fat-incr",
+    "legs/r-upperleg-fat-decr",
+]
+
+
 def clear_scene():
-    """Remove all objects from the scene."""
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete()
 
-def create_makehuman_character():
-    """Create a MakeHuman character using MPFB2 API."""
+
+def find_target_dir():
+    candidates = [
+        os.path.expanduser(
+            "~/Library/Application Support/Blender/5.0/extensions/blender_org/mpfb/data/targets"
+        ),
+    ]
     try:
-        from mpfb.services.humanservice import HumanService
-        from mpfb.entities.humanproperties import HumanProperties
-
-        print("MPFB2 found. Creating human character...")
-
-        # Create default human
-        HumanService.create_human()
-
-        # Get the created mesh object
-        mesh_obj = None
-        for obj in bpy.context.scene.objects:
-            if obj.type == "MESH":
-                mesh_obj = obj
-                break
-
-        if mesh_obj is None:
-            raise RuntimeError("No mesh object created by MPFB2")
-
-        print(f"Created mesh: {mesh_obj.name}")
-        print(f"Shape keys: {len(mesh_obj.data.shape_keys.key_blocks) if mesh_obj.data.shape_keys else 0}")
-
-        return mesh_obj
-
+        import mpfb
+        candidates.insert(0, os.path.join(os.path.dirname(mpfb.__file__), "data", "targets"))
     except ImportError:
-        print("MPFB2 not available. Trying alternative approach...")
-        return create_mpfb2_via_operator()
+        pass
+    for path in candidates:
+        if os.path.isdir(path):
+            return path
+    return None
 
 
-def create_mpfb2_via_operator():
-    """Try creating human via MPFB2 operator."""
-    try:
-        # MPFB2 registers operators — try the main one
-        bpy.ops.mpfb.create_human()
+def resolve_target_path(target_dir, target_spec):
+    for ext in [".target.gz", ".target"]:
+        path = os.path.join(target_dir, target_spec + ext)
+        if os.path.isfile(path):
+            return path
+    return None
 
-        mesh_obj = None
-        for obj in bpy.context.scene.objects:
-            if obj.type == "MESH":
-                mesh_obj = obj
+
+def build_vertex_index_map(basemesh):
+    """Build a mapping from original (full mesh) vertex indices to
+    body-only vertex indices. Uses the 'body' vertex group."""
+    vg = basemesh.vertex_groups.get("body")
+    if not vg:
+        print("WARNING: No 'body' vertex group found, using all vertices")
+        return {i: i for i in range(len(basemesh.data.vertices))}
+
+    vg_idx = vg.index
+    old_to_new = {}
+    new_idx = 0
+    for v in basemesh.data.vertices:
+        in_body = False
+        for g in v.groups:
+            if g.group == vg_idx and g.weight > 0.5:
+                in_body = True
                 break
+        if in_body:
+            old_to_new[v.index] = new_idx
+            new_idx += 1
 
-        if mesh_obj:
-            print(f"Created mesh via operator: {mesh_obj.name}")
-            return mesh_obj
-
-    except Exception as e:
-        print(f"MPFB2 operator failed: {e}")
-
-    print("MPFB2 not available. Creating demo model with manual shape keys...")
-    return create_demo_model()
+    print(f"  Vertex map: {len(old_to_new)} body vertices out of {len(basemesh.data.vertices)} total")
+    return old_to_new
 
 
-def create_demo_model():
-    """
-    Create a demo model with programmatic shape keys
-    that simulate MakeHuman morph targets.
-    """
-    import bmesh
-    from mathutils import Vector
+def remove_helper_geometry(basemesh):
+    """Remove non-body vertices using bmesh (reliable in background mode).
+    Must be called BEFORE any shape keys are added."""
+    bpy.context.view_layer.objects.active = basemesh
+    basemesh.select_set(True)
 
-    # Create a subdivided cube as base (simple humanoid shape)
-    bpy.ops.mesh.primitive_uv_sphere_add(
-        segments=32, ring_count=16, radius=0.5, location=(0, 0, 1)
-    )
-    head = bpy.context.active_object
-    head.name = "DemoHead"
+    # Remove modifiers first (mask etc)
+    for m in list(basemesh.modifiers):
+        basemesh.modifiers.remove(m)
+    print("  Removed all modifiers")
 
-    # Add basis shape key
-    head.shape_key_add(name="Basis", from_mix=False)
+    vg = basemesh.vertex_groups.get("body")
+    if not vg:
+        print("WARNING: No 'body' vertex group, skipping helper removal")
+        return
 
-    # Define morph targets as vertex displacement functions
-    morph_definitions = {
-        # Macro controls
-        "macro-gender": lambda v: Vector((v.x * 0.1, 0, 0)),
-        "macro-age-young": lambda v: Vector((0, 0, v.z * 0.05 if v.z > 0 else 0)),
-        "macro-age-old": lambda v: Vector((0, 0, -v.z * 0.05 if v.z > 0 else 0)),
-        "macro-weight": lambda v: Vector((v.x * 0.3, v.y * 0.3, 0)),
-        "macro-muscle": lambda v: Vector((v.x * 0.2, v.y * 0.15, 0)),
-        "macro-height": lambda v: Vector((0, 0, v.z * 0.3)),
-        "macro-proportion": lambda v: Vector((v.x * -0.1, v.y * -0.1, v.z * 0.15)),
-        "macro-african": lambda v: Vector((v.x * 0.05, v.y * 0.05, 0)),
-        "macro-asian": lambda v: Vector((0, v.y * 0.05, v.z * -0.03)),
-        "macro-caucasian": lambda v: Vector((v.x * -0.03, 0, v.z * 0.02)),
+    vg_idx = vg.index
 
-        # Head
-        "head-oval": lambda v: Vector((v.x * -0.1, v.y * -0.1, v.z * 0.15)),
-        "head-round": lambda v: Vector((v.x * 0.1, v.y * 0.1, v.z * -0.05)),
-        "head-square": lambda v: Vector((v.x * 0.15, v.y * 0.15, v.z * -0.1)),
-        "head-rectangular": lambda v: Vector((v.x * 0.05, v.y * 0.05, v.z * 0.15)),
+    # Use bmesh for reliable vertex deletion in background mode
+    bm = bmesh.new()
+    bm.from_mesh(basemesh.data)
+    bm.verts.ensure_lookup_table()
 
-        # Forehead
-        "forehead-height": lambda v: Vector((0, 0, 0.2 if v.z > 1.3 else 0)),
-        "forehead-width": lambda v: Vector((v.x * 0.15 if v.z > 1.2 else 0, 0, 0)),
-        "forehead-prominence": lambda v: Vector((0, v.y * 0.15 if v.z > 1.2 and v.y < 0 else 0, 0)),
+    deform_layer = bm.verts.layers.deform.active
+    to_remove = []
+    for v in bm.verts:
+        dvert = v[deform_layer]
+        if vg_idx not in dvert or dvert[vg_idx] < 0.5:
+            to_remove.append(v)
 
-        # Eyes
-        "eye-size": lambda v: Vector((v.x * 0.1 if abs(v.x) > 0.1 and v.z > 1.0 and v.z < 1.2 else 0, 0, 0)),
-        "eye-height": lambda v: Vector((0, 0, 0.1 if abs(v.x) > 0.1 and v.z > 1.0 and v.z < 1.2 else 0)),
-        "eye-spacing": lambda v: Vector((v.x * 0.2 if abs(v.x) > 0.1 and v.z > 1.0 and v.z < 1.2 else 0, 0, 0)),
-        "eyebrow-height": lambda v: Vector((0, 0, 0.1 if abs(v.x) > 0.05 and v.z > 1.15 and v.z < 1.3 else 0)),
-        "eyebrow-angle": lambda v: Vector((0, 0, v.x * 0.15 if v.z > 1.15 and v.z < 1.3 else 0)),
+    print(f"  Removing {len(to_remove)} helper vertices...")
+    bmesh.ops.delete(bm, geom=to_remove, context='VERTS')
+    bm.to_mesh(basemesh.data)
+    bm.free()
+    basemesh.data.update()
 
-        # Nose
-        "nose-width": lambda v: Vector((v.x * 0.3 if abs(v.x) < 0.15 and v.z > 0.85 and v.z < 1.05 and v.y < -0.3 else 0, 0, 0)),
-        "nose-length": lambda v: Vector((0, v.y * -0.2 if abs(v.x) < 0.1 and v.z > 0.85 and v.z < 1.05 and v.y < -0.3 else 0, 0)),
-        "nose-height": lambda v: Vector((0, 0, 0.1 if abs(v.x) < 0.1 and v.z > 0.9 and v.z < 1.1 and v.y < -0.3 else 0)),
-        "nose-bridge-width": lambda v: Vector((v.x * 0.2 if abs(v.x) < 0.1 and v.z > 1.0 and v.z < 1.15 and v.y < -0.3 else 0, 0, 0)),
-
-        # Mouth
-        "mouth-width": lambda v: Vector((v.x * 0.3 if abs(v.x) < 0.2 and v.z > 0.7 and v.z < 0.85 and v.y < -0.3 else 0, 0, 0)),
-        "mouth-height": lambda v: Vector((0, 0, 0.1 if abs(v.x) < 0.15 and v.z > 0.7 and v.z < 0.85 and v.y < -0.3 else 0)),
-        "lip-thickness": lambda v: Vector((0, v.y * -0.15 if abs(v.x) < 0.15 and v.z > 0.7 and v.z < 0.85 and v.y < -0.3 else 0, 0)),
-
-        # Chin
-        "chin-width": lambda v: Vector((v.x * 0.2 if v.z < 0.7 and v.z > 0.5 else 0, 0, 0)),
-        "chin-height": lambda v: Vector((0, 0, -0.15 if v.z < 0.65 and v.z > 0.5 else 0)),
-        "chin-prominence": lambda v: Vector((0, -0.15 if v.z < 0.7 and v.z > 0.5 and v.y < -0.2 else 0, 0)),
-
-        # Jaw
-        "jaw-width": lambda v: Vector((v.x * 0.2 if v.z < 0.85 and v.z > 0.6 else 0, 0, 0)),
-        "jaw-angle": lambda v: Vector((v.x * 0.15 if v.z < 0.8 and v.z > 0.6 and abs(v.x) > 0.2 else 0, 0, 0)),
-
-        # Ears
-        "ear-size": lambda v: Vector((v.x * 0.2 if abs(v.x) > 0.4 and v.z > 0.85 and v.z < 1.15 else 0, 0, 0)),
-        "ear-angle": lambda v: Vector((v.x * 0.15 if abs(v.x) > 0.35 and v.z > 0.85 and v.z < 1.15 else 0, v.y * 0.1 if abs(v.x) > 0.35 and v.z > 0.85 and v.z < 1.15 else 0, 0)),
-
-        # Cheeks
-        "cheek-width": lambda v: Vector((v.x * 0.2 if abs(v.x) > 0.2 and v.z > 0.85 and v.z < 1.05 else 0, 0, 0)),
-        "cheek-prominence": lambda v: Vector((0, v.y * -0.15 if abs(v.x) > 0.2 and v.z > 0.85 and v.z < 1.05 and v.y < -0.1 else 0, 0)),
-
-        # Expressions
-        "expression-smile": lambda v: Vector((v.x * 0.1 if abs(v.x) < 0.2 and v.z > 0.7 and v.z < 0.85 else 0, 0, 0.05 if abs(v.x) > 0.1 and v.z > 0.7 and v.z < 0.85 else 0)),
-        "expression-frown": lambda v: Vector((0, 0, -0.05 if abs(v.x) > 0.1 and v.z > 0.7 and v.z < 0.85 else 0)),
-        "expression-surprise": lambda v: Vector((0, 0, 0.1 if v.z > 1.15 else 0)),
-    }
-
-    for name, displacement_fn in morph_definitions.items():
-        sk = head.shape_key_add(name=name, from_mix=False)
-        for i, vert in enumerate(sk.data):
-            base_co = head.data.vertices[i].co
-            delta = displacement_fn(base_co)
-            vert.co = base_co + delta
-
-    print(f"Created demo model with {len(morph_definitions)} shape keys")
-    return head
+    print(f"  After removing helpers: {len(basemesh.data.vertices)} vertices, {len(basemesh.data.polygons)} faces")
 
 
-def export_glb(filepath):
-    """Export the scene as GLB with shape keys."""
-    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+def load_target_with_remap(basemesh, target_path, sk_name, old_to_new):
+    """Load a .target(.gz) file and add as a shape key, remapping vertex
+    indices from the original full mesh to the body-only mesh."""
+    mesh = basemesh.data
+    num_verts = len(mesh.vertices)
 
-    bpy.ops.export_scene.gltf(
-        filepath=filepath,
-        export_format="GLB",
-        use_selection=False,
-        export_apply=False,
-        export_morph=True,
-        export_morph_normal=True,
-        export_morph_tangent=False,
-        export_colors=True,
-        export_yup=True,
-    )
-    print(f"Exported GLB to: {filepath}")
-    file_size = os.path.getsize(filepath)
-    print(f"File size: {file_size / 1024:.1f} KB")
+    if not mesh.shape_keys:
+        basemesh.shape_key_add(name="Basis", from_mix=False)
+
+    opener = gzip.open if target_path.endswith(".gz") else open
+    with opener(target_path, "rt") as f:
+        lines = f.readlines()
+
+    offsets = {}
+    skipped = 0
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) >= 4:
+            old_idx = int(parts[0])
+            new_idx = old_to_new.get(old_idx)
+            if new_idx is not None and new_idx < num_verts:
+                offsets[new_idx] = (float(parts[1]), float(parts[2]), float(parts[3]))
+            else:
+                skipped += 1
+
+    sk = basemesh.shape_key_add(name=sk_name, from_mix=False)
+    for idx, (dx, dy, dz) in offsets.items():
+        base = mesh.vertices[idx].co
+        sk.data[idx].co.x = base.x + dx
+        sk.data[idx].co.y = base.y + dy
+        sk.data[idx].co.z = base.z + dz
+
+    return len(offsets)
+
+
+def add_basic_material(basemesh):
+    """Add a simple skin-tone material so the mesh isn't invisible/black."""
+    mat = bpy.data.materials.new(name="Skin")
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes.get("Principled BSDF")
+    if bsdf:
+        # Warm skin tone
+        bsdf.inputs["Base Color"].default_value = (0.8, 0.6, 0.5, 1.0)
+        bsdf.inputs["Roughness"].default_value = 0.7
+        # Subsurface for skin-like appearance
+        bsdf.inputs["Subsurface Weight"].default_value = 0.3
+        bsdf.inputs["Subsurface Radius"].default_value = (1.0, 0.2, 0.1)
+
+    basemesh.data.materials.append(mat)
+    print("  Added skin material")
 
 
 def main():
     print("=" * 60)
-    print("MakeHuman → GLB Export Script")
+    print("MakeHuman -> GLB Export (Helper-Free, Mobile-Friendly)")
+    print(f"Target count: {len(CURATED_TARGETS)}")
     print("=" * 60)
 
     clear_scene()
 
-    mesh_obj = create_makehuman_character()
+    # Create base human
+    basemesh = None
+    try:
+        from mpfb.services.humanservice import HumanService
+        print("Creating base human via HumanService...")
+        basemesh = HumanService.create_human(
+            mask_helpers=True,
+            detailed_helpers=False,
+            extra_vertex_groups=True,
+            feet_on_ground=True,
+            scale=0.1,
+        )
+    except Exception as e:
+        print(f"HumanService failed: {e}, trying operator...")
+        try:
+            bpy.ops.mpfb.create_human()
+            for obj in bpy.context.scene.objects:
+                if obj.type == "MESH":
+                    basemesh = obj
+                    break
+        except Exception as e2:
+            print(f"Operator also failed: {e2}")
+            return
 
-    if mesh_obj and mesh_obj.data.shape_keys:
-        num_keys = len(mesh_obj.data.shape_keys.key_blocks) - 1  # subtract Basis
-        print(f"\nTotal shape keys: {num_keys}")
-    else:
-        print("\nWarning: No shape keys found on the mesh")
+    if not basemesh:
+        print("ERROR: No mesh created")
+        return
 
-    export_glb(OUTPUT_PATH)
-    print("\nDone!")
+    print(f"Base mesh: {basemesh.name}, vertices: {len(basemesh.data.vertices)}")
+
+    # STEP 1: Build vertex index map BEFORE removing helpers
+    print("\nStep 1: Building vertex index map...")
+    old_to_new = build_vertex_index_map(basemesh)
+
+    # STEP 2: Remove helper geometry (BEFORE adding shape keys!)
+    print("\nStep 2: Removing helper geometry...")
+    remove_helper_geometry(basemesh)
+
+    # STEP 3: Add a basic material
+    print("\nStep 3: Adding material...")
+    add_basic_material(basemesh)
+
+    # STEP 4: Load targets with remapped indices
+    print("\nStep 4: Loading morph targets...")
+    target_dir = find_target_dir()
+    if not target_dir:
+        print("ERROR: Cannot find MPFB2 targets directory")
+        return
+
+    loaded = 0
+    for target_spec in CURATED_TARGETS:
+        target_path = resolve_target_path(target_dir, target_spec)
+        if not target_path:
+            print(f"  MISSING: {target_spec}")
+            continue
+        sk_name = os.path.basename(target_spec)
+        try:
+            affected = load_target_with_remap(basemesh, target_path, sk_name, old_to_new)
+            loaded += 1
+        except Exception as e:
+            print(f"  FAILED: {sk_name}: {e}")
+
+    print(f"\nLoaded {loaded}/{len(CURATED_TARGETS)} targets")
+    if basemesh.data.shape_keys:
+        num_keys = len(basemesh.data.shape_keys.key_blocks) - 1
+        print(f"Total shape keys: {num_keys}")
+    print(f"Final vertex count: {len(basemesh.data.vertices)}")
+
+    # STEP 5: Smooth normals for better appearance
+    bpy.context.view_layer.objects.active = basemesh
+    basemesh.select_set(True)
+    bpy.ops.object.shade_smooth()
+    print("Applied smooth shading")
+
+    # STEP 6: Export
+    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
+    bpy.ops.export_scene.gltf(
+        filepath=OUTPUT_PATH,
+        export_format="GLB",
+        use_selection=False,
+        export_apply=False,
+        export_morph=True,
+        export_morph_normal=False,
+        export_morph_tangent=False,
+        export_yup=True,
+    )
+
+    file_size = os.path.getsize(OUTPUT_PATH)
+    print(f"\nExported: {OUTPUT_PATH}")
+    print(f"File size: {file_size / (1024*1024):.1f} MB")
+    print("Done!")
 
 
 if __name__ == "__main__":
