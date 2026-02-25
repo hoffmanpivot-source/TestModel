@@ -18,8 +18,8 @@ import { MorphPanel } from "./src/components/MorphPanel";
 import { useMorphTargets } from "./src/hooks/useMorphTargets";
 
 /* eslint-disable @typescript-eslint/no-require-imports */
-// Testing: no shape keys to isolate rendering issue
-const MODEL_ASSET = require("./assets/models/makehuman_nokeys.glb");
+// Testing: 2 shape keys to check if morph data causes distortion
+const MODEL_ASSET = require("./assets/models/makehuman_2keys.glb");
 
 const DEV_SCREENSHOT_URL = "http://10.1.1.19:8766/screenshot";
 
