@@ -16,6 +16,7 @@ interface Props {
   modelUri: string | null;
   onModelLoaded: (scene: THREE.Group) => void;
   onError: (error: string) => void;
+  version?: string;
 }
 
 // Spherical camera orbit state
@@ -28,7 +29,7 @@ interface OrbitState {
   targetZ: number;
 }
 
-export function ModelViewer({ modelUri, onModelLoaded, onError }: Props) {
+export function ModelViewer({ modelUri, onModelLoaded, onError, version }: Props) {
   const rendererRef = useRef<Renderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
@@ -214,7 +215,7 @@ export function ModelViewer({ modelUri, onModelLoaded, onError }: Props) {
               model.position.sub(center.multiplyScalar(scale));
               model.position.y += size.y * scale * 0.5;
 
-              // Log morph target info
+              // Log morph target info and verify influences are zero
               let morphCount = 0;
               model.traverse((child) => {
                 if (child instanceof THREE.Mesh) {
@@ -226,6 +227,24 @@ export function ModelViewer({ modelUri, onModelLoaded, onError }: Props) {
                       names.length > 10 ? "..." : ""
                     );
                     morphCount += names.length;
+                    // Debug: log current morph influences
+                    console.log(
+                      `[ModelViewer] morphTargetInfluences:`,
+                      JSON.stringify(child.morphTargetInfluences)
+                    );
+                    // Debug: check morph target geometry data
+                    if (child.geometry.morphAttributes?.position) {
+                      const morphAttrs = child.geometry.morphAttributes.position;
+                      morphAttrs.forEach((attr: THREE.BufferAttribute, i: number) => {
+                        let maxVal = 0;
+                        for (let j = 0; j < Math.min(attr.count * 3, 100); j++) {
+                          maxVal = Math.max(maxVal, Math.abs(attr.array[j]));
+                        }
+                        console.log(
+                          `[ModelViewer] MorphAttr ${i}: count=${attr.count}, first100maxVal=${maxVal.toFixed(6)}`
+                        );
+                      });
+                    }
                   }
                   child.morphTargetInfluences =
                     child.morphTargetInfluences || [];
@@ -351,6 +370,7 @@ export function ModelViewer({ modelUri, onModelLoaded, onError }: Props) {
       <View style={styles.overlay}>
         <Text style={styles.overlayText}>
           {modelUri ? "GLB Model" : "Demo Mode"}
+          {version ? ` v${version}` : ""}
         </Text>
       </View>
     </View>

@@ -17,9 +17,11 @@ import { ModelViewer } from "./src/components/ModelViewer";
 import { MorphPanel } from "./src/components/MorphPanel";
 import { useMorphTargets } from "./src/hooks/useMorphTargets";
 
+const APP_VERSION = "0.0.3";
+
 /* eslint-disable @typescript-eslint/no-require-imports */
-// Testing: 2 shape keys to check if morph data causes distortion
-const MODEL_ASSET = require("./assets/models/makehuman_2keys.glb");
+// Testing: dense morph targets (non-sparse) to rule out sparse accessor bug
+const MODEL_ASSET = require("./assets/models/makehuman_2keys_dense.glb");
 
 const DEV_SCREENSHOT_URL = "http://10.1.1.19:8766/screenshot";
 
@@ -180,6 +182,7 @@ export default function App() {
           modelUri={modelUri}
           onModelLoaded={handleModelLoaded}
           onError={handleError}
+          version={APP_VERSION}
         />
         {/* Dev buttons */}
         <TouchableOpacity
