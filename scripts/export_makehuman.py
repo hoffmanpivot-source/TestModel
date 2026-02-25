@@ -504,15 +504,110 @@ SYSTEM_ASSETS = [
 ]
 
 
+def parse_mhclo(mhclo_path):
+    """Parse a .mhclo file and return obj_file, material_file, and vertex mappings.
+
+    Vertex mapping formats:
+      - Simple (1 value per line): proxy_vert -> basemesh_vert (1:1)
+      - Barycentric (9 values per line): v1 v2 v3 w1 w2 w3 ox oy oz
+        proxy_vert = w1*pos(v1) + w2*pos(v2) + w3*pos(v3) + (ox, oy, oz)
+    """
+    mhclo_dir = os.path.dirname(mhclo_path)
+    obj_file = None
+    mat_file = None
+    vertex_mappings = []  # list of tuples: either (vidx,) or (v1,v2,v3,w1,w2,w3,ox,oy,oz)
+    in_verts = False
+
+    with open(mhclo_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            if line.startswith("obj_file "):
+                obj_file = os.path.join(mhclo_dir, line.split(None, 1)[1])
+            elif line.startswith("material "):
+                mat_ref = line.split(None, 1)[1]
+                mat_file = os.path.join(mhclo_dir, mat_ref)
+            elif line.startswith("verts "):
+                in_verts = True
+                continue
+
+            if in_verts:
+                parts = line.split()
+                if len(parts) == 1:
+                    # Simple 1:1 mapping
+                    try:
+                        vertex_mappings.append((int(parts[0]),))
+                    except ValueError:
+                        in_verts = False  # Hit a non-vertex line
+                elif len(parts) >= 9:
+                    # Barycentric: v1 v2 v3 w1 w2 w3 ox oy oz
+                    try:
+                        v1, v2, v3 = int(parts[0]), int(parts[1]), int(parts[2])
+                        w1, w2, w3 = float(parts[3]), float(parts[4]), float(parts[5])
+                        ox, oy, oz = float(parts[6]), float(parts[7]), float(parts[8])
+                        vertex_mappings.append((v1, v2, v3, w1, w2, w3, ox, oy, oz))
+                    except ValueError:
+                        in_verts = False
+                else:
+                    in_verts = False  # End of vertex section
+
+    return obj_file, mat_file, vertex_mappings
+
+
+def fit_proxy_to_basemesh(asset_obj, basemesh, vertex_mappings):
+    """Reposition proxy mesh vertices to fit the basemesh using .mhclo mappings.
+
+    This replaces the OBJ's original vertex positions with positions computed
+    from the basemesh, ensuring correct scale and alignment.
+    """
+    base_verts = basemesh.data.vertices
+    proxy_verts = asset_obj.data.vertices
+
+    if len(vertex_mappings) != len(proxy_verts):
+        print(f"  WARNING: mapping count ({len(vertex_mappings)}) != proxy verts ({len(proxy_verts)})")
+        # Use min to avoid index errors
+        count = min(len(vertex_mappings), len(proxy_verts))
+    else:
+        count = len(vertex_mappings)
+
+    fitted = 0
+    for i in range(count):
+        mapping = vertex_mappings[i]
+        if len(mapping) == 1:
+            # Simple 1:1 mapping
+            base_idx = mapping[0]
+            if base_idx < len(base_verts):
+                proxy_verts[i].co = base_verts[base_idx].co.copy()
+                fitted += 1
+        elif len(mapping) == 9:
+            # Barycentric with offset
+            v1, v2, v3, w1, w2, w3, ox, oy, oz = mapping
+            if v1 < len(base_verts) and v2 < len(base_verts) and v3 < len(base_verts):
+                p1 = base_verts[v1].co
+                p2 = base_verts[v2].co
+                p3 = base_verts[v3].co
+                x = w1 * p1.x + w2 * p2.x + w3 * p3.x + ox
+                y = w1 * p1.y + w2 * p2.y + w3 * p3.y + oy
+                z = w1 * p1.z + w2 * p2.z + w3 * p3.z + oz
+                proxy_verts[i].co.x = x
+                proxy_verts[i].co.y = y
+                proxy_verts[i].co.z = z
+                fitted += 1
+
+    asset_obj.data.update()
+    return fitted
+
+
 def load_system_assets(basemesh):
     """Load system assets (eyes, eyebrows, eyelashes, teeth) as separate meshes.
 
-    Uses Blender's OBJ importer directly (no MPFB2 dependency). The .obj files
-    from the MakeHuman system assets are pre-positioned to match the basemesh
-    at scale=0.1.
+    Uses Blender's OBJ importer for mesh topology (faces, UVs), then repositions
+    vertices using the .mhclo vertex mapping to fit the basemesh exactly.
+    This handles scale and positioning automatically.
 
-    Must be called while the basemesh still has its full vertex set,
-    as the assets are pre-fitted to the default human proportions.
+    Must be called while the basemesh still has its full vertex set.
     """
     system_dir = os.path.join(PROJECT_DIR, "assets", "system")
     loaded = []
@@ -523,27 +618,15 @@ def load_system_assets(basemesh):
             print(f"  MISSING: {mhclo_path}")
             continue
 
-        # Find the .obj file referenced in the .mhclo
-        mhclo_dir = os.path.dirname(mhclo_path)
-        obj_file = None
-        tex_file = None
-        mat_file = None
-
-        # Parse mhclo for obj_file and material references
-        with open(mhclo_path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith("obj_file "):
-                    obj_file = os.path.join(mhclo_dir, line.split(None, 1)[1])
-                elif line.startswith("material "):
-                    mat_ref = line.split(None, 1)[1]
-                    mat_file = os.path.join(mhclo_dir, mat_ref)
+        # Parse .mhclo for obj path, material, and vertex mappings
+        obj_file, mat_file, vertex_mappings = parse_mhclo(mhclo_path)
 
         if not obj_file or not os.path.exists(obj_file):
             print(f"  {name}: no obj file found")
             continue
 
         # Find texture from .mhmat file
+        tex_file = None
         if mat_file and os.path.exists(mat_file):
             mat_dir = os.path.dirname(mat_file)
             with open(mat_file, "r") as f:
@@ -554,7 +637,7 @@ def load_system_assets(basemesh):
                         tex_file = os.path.join(mat_dir, tex_ref)
 
         try:
-            # Import the OBJ
+            # Import the OBJ (for topology: faces, UVs, normals)
             before_objs = set(bpy.data.objects.keys())
             bpy.ops.wm.obj_import(filepath=obj_file, forward_axis='NEGATIVE_Z', up_axis='Y')
             after_objs = set(bpy.data.objects.keys())
@@ -567,8 +650,17 @@ def load_system_assets(basemesh):
             asset_obj = bpy.data.objects[list(new_objs)[0]]
             asset_obj.name = name.lower()
 
-            # Scale to match basemesh (MH assets are at scale 1, basemesh at 0.1)
-            asset_obj.scale = basemesh.scale
+            # Reset any object-level transforms (we'll position via vertex data)
+            asset_obj.location = (0, 0, 0)
+            asset_obj.rotation_euler = (0, 0, 0)
+            asset_obj.scale = (1, 1, 1)
+
+            # Fit proxy vertices to basemesh using .mhclo mappings
+            if vertex_mappings:
+                fitted = fit_proxy_to_basemesh(asset_obj, basemesh, vertex_mappings)
+                print(f"  {name}: fitted {fitted}/{len(asset_obj.data.vertices)} vertices to basemesh")
+            else:
+                print(f"  {name}: WARNING no vertex mappings found, using raw OBJ positions")
 
             # Create material with texture
             mat = bpy.data.materials.new(name=f"{name}_mat")
