@@ -1,7 +1,17 @@
-import React, { useEffect, useState } from "react";
-import { ActivityIndicator, SafeAreaView, StyleSheet, Text, View } from "react-native";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  SafeAreaView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { Asset } from "expo-asset";
+import * as LegacyFS from "expo-file-system/build/legacy";
+import { captureScreen } from "react-native-view-shot";
 import * as THREE from "three";
 import { ModelViewer } from "./src/components/ModelViewer";
 import { MorphPanel } from "./src/components/MorphPanel";
@@ -10,6 +20,8 @@ import { useMorphTargets } from "./src/hooks/useMorphTargets";
 /* eslint-disable @typescript-eslint/no-require-imports */
 // Testing: no shape keys to isolate rendering issue
 const MODEL_ASSET = require("./assets/models/makehuman_nokeys.glb");
+
+const DEV_SCREENSHOT_URL = "http://10.1.1.19:8766/screenshot";
 
 export default function App() {
   const [modelError, setModelError] = useState<string | null>(null);
@@ -51,6 +63,101 @@ export default function App() {
     setModelError(error);
   };
 
+  // Build metadata for screenshots/notes
+  const buildMeta = useCallback(
+    (description: string) => ({
+      timestamp: new Date().toISOString(),
+      description,
+      morphState: Object.fromEntries(
+        Object.entries(morphState).filter(([, v]) => v !== 0)
+      ),
+      targetCount,
+      meshCount,
+    }),
+    [morphState, targetCount, meshCount]
+  );
+
+  // Send screenshot to dev server
+  const sendScreenshot = useCallback(
+    async (base64: string, meta: Record<string, unknown>) => {
+      try {
+        await fetch(DEV_SCREENSHOT_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image: base64, meta }),
+        });
+        console.log("[Screenshot] Sent to server");
+      } catch {
+        // Fallback: save locally
+        const dir = `${LegacyFS.documentDirectory}dev_screenshots/`;
+        await LegacyFS.makeDirectoryAsync(dir, { intermediates: true });
+        const ts = new Date().toISOString().replace(/:/g, "-");
+        await LegacyFS.writeAsStringAsync(
+          `${dir}${ts}.json`,
+          JSON.stringify(meta, null, 2)
+        );
+        console.log("[Screenshot] Saved locally (server unreachable)");
+      }
+    },
+    []
+  );
+
+  // Screenshot button handler
+  const handleScreenshot = useCallback(async () => {
+    try {
+      const uri = await captureScreen({ format: "jpg", quality: 0.85 });
+      if (!uri) return;
+      const base64 = await LegacyFS.readAsStringAsync(uri, {
+        encoding: LegacyFS.EncodingType.Base64,
+      });
+      Alert.prompt(
+        "Screenshot Note",
+        "Add a description (optional):",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Save",
+            onPress: (text?: string) => {
+              const meta = buildMeta(text?.trim() || "");
+              sendScreenshot(base64, meta);
+            },
+          },
+        ],
+        "plain-text",
+        "",
+        "default"
+      );
+    } catch (err) {
+      console.error("[Screenshot] Error:", err);
+    }
+  }, [buildMeta, sendScreenshot]);
+
+  // Note button handler (no screenshot)
+  const handleNote = useCallback(() => {
+    Alert.prompt(
+      "Dev Note",
+      "What do you want to note?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Save",
+          onPress: (text?: string) => {
+            if (!text?.trim()) return;
+            const meta = buildMeta(text.trim());
+            fetch(DEV_SCREENSHOT_URL, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ meta }),
+            }).catch(() => {});
+          },
+        },
+      ],
+      "plain-text",
+      "",
+      "default"
+    );
+  }, [buildMeta]);
+
   if (!assetReady) {
     return (
       <SafeAreaView style={styles.container}>
@@ -74,6 +181,21 @@ export default function App() {
           onModelLoaded={handleModelLoaded}
           onError={handleError}
         />
+        {/* Dev buttons */}
+        <TouchableOpacity
+          style={styles.devBtn1}
+          onPress={handleScreenshot}
+          activeOpacity={0.75}
+        >
+          <Text style={styles.devBtnIcon}>{"📸"}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.devBtn2}
+          onPress={handleNote}
+          activeOpacity={0.75}
+        >
+          <Text style={styles.devBtnIcon}>{"📝"}</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Morph Target Panel — bottom 45% */}
@@ -114,5 +236,32 @@ const styles = StyleSheet.create({
     flex: 45,
     borderTopWidth: 2,
     borderTopColor: "#333",
+  },
+  devBtn1: {
+    position: "absolute",
+    top: 10,
+    right: 10,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+    zIndex: 10,
+  },
+  devBtn2: {
+    position: "absolute",
+    top: 56,
+    right: 10,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+    zIndex: 10,
+  },
+  devBtnIcon: {
+    fontSize: 20,
   },
 });

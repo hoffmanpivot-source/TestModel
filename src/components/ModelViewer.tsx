@@ -1,5 +1,12 @@
 import React, { useCallback, useEffect, useRef } from "react";
-import { StyleSheet, View, Text } from "react-native";
+import {
+  StyleSheet,
+  View,
+  Text,
+  PanResponder,
+  GestureResponderEvent,
+  PanResponderGestureState,
+} from "react-native";
 import { GLView, ExpoWebGLRenderingContext } from "expo-gl";
 import { Renderer } from "expo-three";
 import * as THREE from "three";
@@ -11,16 +18,114 @@ interface Props {
   onError: (error: string) => void;
 }
 
+// Spherical camera orbit state
+interface OrbitState {
+  theta: number; // horizontal angle (radians)
+  phi: number; // vertical angle (radians)
+  radius: number; // distance from target
+  targetX: number;
+  targetY: number;
+  targetZ: number;
+}
+
 export function ModelViewer({ modelUri, onModelLoaded, onError }: Props) {
   const rendererRef = useRef<Renderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const modelRef = useRef<THREE.Group | null>(null);
   const animRef = useRef<number>(0);
-  const rotationRef = useRef({ y: 0 });
   const glRef = useRef<ExpoWebGLRenderingContext | null>(null);
   const contextReadyRef = useRef(false);
   const loadedUriRef = useRef<string | null>(null);
+
+  // Camera orbit state
+  const orbitRef = useRef<OrbitState>({
+    theta: 0,
+    phi: Math.PI / 2.2, // slightly above horizontal
+    radius: 3,
+    targetX: 0,
+    targetY: 0.8,
+    targetZ: 0,
+  });
+
+  // Touch tracking for pinch zoom
+  const touchesRef = useRef<{ x: number; y: number }[]>([]);
+  const lastPinchDistRef = useRef<number>(0);
+  const isPinchingRef = useRef(false);
+
+  const updateCamera = useCallback(() => {
+    const camera = cameraRef.current;
+    if (!camera) return;
+    const o = orbitRef.current;
+
+    // Clamp phi to avoid flipping
+    o.phi = Math.max(0.1, Math.min(Math.PI - 0.1, o.phi));
+    o.radius = Math.max(0.5, Math.min(10, o.radius));
+
+    camera.position.x =
+      o.targetX + o.radius * Math.sin(o.phi) * Math.sin(o.theta);
+    camera.position.y = o.targetY + o.radius * Math.cos(o.phi);
+    camera.position.z =
+      o.targetZ + o.radius * Math.sin(o.phi) * Math.cos(o.theta);
+
+    camera.lookAt(o.targetX, o.targetY, o.targetZ);
+  }, []);
+
+  // PanResponder for orbit (1 finger) and zoom (2 fingers)
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: (
+        evt: GestureResponderEvent,
+        _gestureState: PanResponderGestureState
+      ) => {
+        const touches = evt.nativeEvent.touches;
+        if (touches && touches.length === 2) {
+          isPinchingRef.current = true;
+          const dx = touches[1].pageX - touches[0].pageX;
+          const dy = touches[1].pageY - touches[0].pageY;
+          lastPinchDistRef.current = Math.sqrt(dx * dx + dy * dy);
+        } else {
+          isPinchingRef.current = false;
+        }
+      },
+      onPanResponderMove: (
+        evt: GestureResponderEvent,
+        gestureState: PanResponderGestureState
+      ) => {
+        const touches = evt.nativeEvent.touches;
+
+        // Pinch zoom (2 fingers)
+        if (touches && touches.length === 2) {
+          isPinchingRef.current = true;
+          const dx = touches[1].pageX - touches[0].pageX;
+          const dy = touches[1].pageY - touches[0].pageY;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+
+          if (lastPinchDistRef.current > 0) {
+            const scale = lastPinchDistRef.current / dist;
+            orbitRef.current.radius *= scale;
+            updateCamera();
+          }
+          lastPinchDistRef.current = dist;
+          return;
+        }
+
+        // Single finger: rotate (orbit)
+        if (!isPinchingRef.current && gestureState.numberActiveTouches === 1) {
+          const sensitivity = 0.005;
+          orbitRef.current.theta -= gestureState.dx * sensitivity;
+          orbitRef.current.phi -= gestureState.dy * sensitivity;
+          updateCamera();
+        }
+      },
+      onPanResponderRelease: () => {
+        isPinchingRef.current = false;
+        lastPinchDistRef.current = 0;
+      },
+    })
+  ).current;
 
   const loadGLBModel = useCallback(
     (scene: THREE.Scene, camera: THREE.PerspectiveCamera, uri: string) => {
@@ -28,14 +133,16 @@ export function ModelViewer({ modelUri, onModelLoaded, onError }: Props) {
 
       const loader = new GLTFLoader();
 
-      // For React Native, we need to load via fetch + ArrayBuffer
       fetch(uri)
         .then((res) => {
           console.log("[ModelViewer] Fetch response status:", res.status);
           return res.arrayBuffer();
         })
         .then((buffer) => {
-          console.log("[ModelViewer] Got ArrayBuffer, size:", buffer.byteLength);
+          console.log(
+            "[ModelViewer] Got ArrayBuffer, size:",
+            buffer.byteLength
+          );
 
           loader.parse(
             buffer,
@@ -84,26 +191,26 @@ export function ModelViewer({ modelUri, onModelLoaded, onError }: Props) {
               scene.add(model);
               modelRef.current = model;
 
-              // Adjust camera
-              camera.position.set(0, size.y * scale * 0.5, 3);
-              camera.lookAt(0, size.y * scale * 0.5, 0);
+              // Set orbit to frame the model
+              const modelHeight = size.y * scale;
+              orbitRef.current.targetY = modelHeight * 0.5;
+              orbitRef.current.radius = 3;
+              updateCamera();
 
               onModelLoaded(model);
             },
             (err) => {
               console.error("[ModelViewer] GLTF parse error:", err);
               onError(`GLTF parse error: ${err}`);
-              addDemoModel(scene, camera);
             }
           );
         })
         .catch((err) => {
           console.error("[ModelViewer] Fetch error:", err);
           onError(`Fetch error: ${err}`);
-          addDemoModel(scene, camera);
         });
     },
-    [onModelLoaded, onError]
+    [onModelLoaded, onError, updateCamera]
   );
 
   const onContextCreate = useCallback(
@@ -122,9 +229,8 @@ export function ModelViewer({ modelUri, onModelLoaded, onError }: Props) {
         0.1,
         100
       );
-      camera.position.set(0, 1, 3);
-      camera.lookAt(0, 1, 0);
       cameraRef.current = camera;
+      updateCamera();
 
       // Lighting
       const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
@@ -155,26 +261,19 @@ export function ModelViewer({ modelUri, onModelLoaded, onError }: Props) {
         loadedUriRef.current = modelUri;
         loadGLBModel(scene, camera, modelUri);
       } else if (!modelUri) {
-        console.log("[ModelViewer] No model URI yet, showing demo");
-        addDemoModel(scene, camera);
+        console.log("[ModelViewer] No model URI yet");
       }
 
       // Animation loop
       const animate = () => {
         animRef.current = requestAnimationFrame(animate);
-
-        if (modelRef.current) {
-          rotationRef.current.y += 0.003;
-          modelRef.current.rotation.y = rotationRef.current.y;
-        }
-
         renderer.render(scene, camera);
         gl.endFrameEXP();
       };
 
       animate();
     },
-    [modelUri, loadGLBModel]
+    [modelUri, loadGLBModel, updateCamera]
   );
 
   // React to modelUri changes AFTER GL context is ready (load only once)
@@ -192,81 +291,6 @@ export function ModelViewer({ modelUri, onModelLoaded, onError }: Props) {
     }
   }, [modelUri, loadGLBModel]);
 
-  const addDemoModel = (
-    scene: THREE.Scene,
-    camera: THREE.PerspectiveCamera
-  ) => {
-    const baseGeometry = new THREE.SphereGeometry(0.5, 32, 32);
-    const positionAttr = baseGeometry.getAttribute("position");
-    const count = positionAttr.count;
-
-    const morphAttributes: Record<string, THREE.Float32BufferAttribute> = {};
-
-    // head-width
-    const headWidth = new Float32Array(count * 3);
-    for (let i = 0; i < count; i++) {
-      headWidth[i * 3] = positionAttr.getX(i) * 0.5;
-    }
-    morphAttributes["head-width"] = new THREE.Float32BufferAttribute(headWidth, 3);
-
-    // head-height
-    const headHeight = new Float32Array(count * 3);
-    for (let i = 0; i < count; i++) {
-      headHeight[i * 3 + 1] = positionAttr.getY(i) * 0.5;
-    }
-    morphAttributes["head-height"] = new THREE.Float32BufferAttribute(headHeight, 3);
-
-    // nose-length
-    const noseLength = new Float32Array(count * 3);
-    for (let i = 0; i < count; i++) {
-      const x = positionAttr.getX(i);
-      const y = positionAttr.getY(i);
-      const z = positionAttr.getZ(i);
-      noseLength[i * 3 + 2] =
-        z > 0.3 && Math.abs(x) < 0.15 && y > -0.1 && y < 0.2 ? 0.3 : 0;
-    }
-    morphAttributes["nose-length"] = new THREE.Float32BufferAttribute(noseLength, 3);
-
-    // macro-weight
-    const macroWeight = new Float32Array(count * 3);
-    for (let i = 0; i < count; i++) {
-      macroWeight[i * 3] = positionAttr.getX(i) * 0.3;
-      macroWeight[i * 3 + 1] = positionAttr.getY(i) * 0.1;
-      macroWeight[i * 3 + 2] = positionAttr.getZ(i) * 0.3;
-    }
-    morphAttributes["macro-weight"] = new THREE.Float32BufferAttribute(macroWeight, 3);
-
-    baseGeometry.morphAttributes.position = Object.values(morphAttributes);
-
-    const material = new THREE.MeshStandardMaterial({
-      color: 0xccaa88,
-      roughness: 0.6,
-      metalness: 0.1,
-    });
-
-    const mesh = new THREE.Mesh(baseGeometry, material);
-    mesh.morphTargetDictionary = {};
-    mesh.morphTargetInfluences = [];
-
-    const names = Object.keys(morphAttributes);
-    for (let i = 0; i < names.length; i++) {
-      mesh.morphTargetDictionary[names[i]] = i;
-      mesh.morphTargetInfluences.push(0);
-    }
-
-    mesh.position.y = 0.7;
-
-    const group = new THREE.Group();
-    group.add(mesh);
-    scene.add(group);
-    modelRef.current = group;
-
-    camera.position.set(0, 0.7, 2.5);
-    camera.lookAt(0, 0.7, 0);
-
-    onModelLoaded(group);
-  };
-
   useEffect(() => {
     return () => {
       if (animRef.current) {
@@ -278,6 +302,7 @@ export function ModelViewer({ modelUri, onModelLoaded, onError }: Props) {
   return (
     <View style={styles.container}>
       <GLView style={styles.glView} onContextCreate={onContextCreate} />
+      <View style={styles.touchOverlay} {...panResponder.panHandlers} />
       <View style={styles.overlay}>
         <Text style={styles.overlayText}>
           {modelUri ? "GLB Model" : "Demo Mode"}
@@ -295,6 +320,10 @@ const styles = StyleSheet.create({
   glView: {
     flex: 1,
   },
+  touchOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 1,
+  },
   overlay: {
     position: "absolute",
     top: 8,
@@ -303,6 +332,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 4,
+    zIndex: 2,
   },
   overlayText: {
     color: "#AAA",
