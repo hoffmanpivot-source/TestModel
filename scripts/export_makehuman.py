@@ -359,76 +359,136 @@ def load_target_offsets(target_dir, target_spec, old_to_new, num_verts):
     return offsets
 
 
-def create_composite_breast_morphs(basemesh, target_dir, old_to_new):
-    """Create composite breast morphs using MakeHuman combo targets.
+def capture_breast_deltas_from_mpfb2(basemesh):
+    """Capture breast morph deltas from MPFB2's own parametric shape keys via depsgraph.
 
-    Uses maxcup-minfirmness for natural breast growth (forward + downward droop).
-    maxfirmness pushes breasts UP which looks wrong; minfirmness gives natural gravity.
+    Instead of loading raw .target files and guessing at scale factors, this captures
+    the EXACT vertex positions that MPFB2's parametric system computes. This produces
+    natural-looking breast shapes because it uses MakeHuman's proper blending.
+
+    Must be called BEFORE removing MPFB2's default shape keys.
+    Returns dict of {morph_name: {vertex_index: (dx, dy, dz)}} on the ORIGINAL mesh.
     """
+    import numpy as np
+
+    if not basemesh.data.shape_keys:
+        print("  WARNING: No shape keys found for breast capture")
+        return {}
+
+    keys = basemesh.data.shape_keys.key_blocks
+    num_verts = len(basemesh.data.vertices)
+
+    # Find cup and firmness shape keys by pattern matching
+    # MPFB2 creates: $md-$fe-$yn-$av$mu-$av$wg-maxcup-$av$fi (cup size)
+    #                $md-$fe-$yn-$av$mu-$av$wg-$avcup-max$fi (firmness)
+    cup_key = None
+    firm_key = None
+    for sk in keys:
+        name = sk.name.lower()
+        if "maxcup" in name:
+            cup_key = sk
+        if "max$fi" in name or "maxfirmness" in name:
+            firm_key = sk
+
+    print(f"  Cup key: {cup_key.name} (default={cup_key.value:.4f})" if cup_key else "  Cup key: NOT FOUND")
+    print(f"  Firm key: {firm_key.name} (default={firm_key.value:.4f})" if firm_key else "  Firm key: NOT FOUND")
+
+    if not cup_key:
+        print("  WARNING: Cannot find cupsize shape key, falling back to target files")
+        return {}
+
+    # Save default values for all shape keys
+    default_values = {sk.name: sk.value for sk in keys}
+
+    # Capture base positions (all keys at their defaults)
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    eval_obj = basemesh.evaluated_get(depsgraph)
+    eval_mesh = eval_obj.to_mesh()
+    base_co = np.zeros(num_verts * 3)
+    eval_mesh.vertices.foreach_get("co", base_co)
+    base_co = base_co.copy()
+    eval_obj.to_mesh_clear()
+
+    result = {}
+
+    def capture_delta(key_to_change, target_value):
+        """Set a shape key to target_value, capture vertex positions, compute delta from base."""
+        key_to_change.value = target_value
+        depsgraph.update()
+        eval_obj = basemesh.evaluated_get(depsgraph)
+        eval_mesh = eval_obj.to_mesh()
+        co = np.zeros(num_verts * 3)
+        eval_mesh.vertices.foreach_get("co", co)
+        co = co.copy()
+        eval_obj.to_mesh_clear()
+        key_to_change.value = default_values[key_to_change.name]
+
+        deltas = (co - base_co).reshape(-1, 3)
+        offsets = {}
+        for i in range(num_verts):
+            dx, dy, dz = deltas[i]
+            if abs(dx) > 1e-6 or abs(dy) > 1e-6 or abs(dz) > 1e-6:
+                offsets[i] = (float(dx), float(dy), float(dz))
+        return offsets
+
+    # Capture breast-size-incr: set cupsize key to 1.0
+    cup_offsets = capture_delta(cup_key, 1.0)
+    result["breast-size-incr"] = cup_offsets
+    print(f"  breast-size-incr: {len(cup_offsets)} vertices affected")
+
+    # breast-size-decr: negate the incr deltas (no mincup key available)
+    decr_offsets = {i: (-dx, -dy, -dz) for i, (dx, dy, dz) in cup_offsets.items()}
+    result["breast-size-decr"] = decr_offsets
+    print(f"  breast-size-decr: {len(decr_offsets)} vertices (negated incr)")
+
+    # Capture breast-firmness-incr: set firmness key to 1.0
+    if firm_key:
+        firm_offsets = capture_delta(firm_key, 1.0)
+        result["breast-firmness-incr"] = firm_offsets
+        print(f"  breast-firmness-incr: {len(firm_offsets)} vertices affected")
+
+        # breast-firmness-decr: negate firmness incr
+        firm_decr = {i: (-dx, -dy, -dz) for i, (dx, dy, dz) in firm_offsets.items()}
+        result["breast-firmness-decr"] = firm_decr
+        print(f"  breast-firmness-decr: {len(firm_decr)} vertices (negated incr)")
+
+    # Restore all default values
+    for sk in keys:
+        sk.value = default_values[sk.name]
+
+    return result
+
+
+def add_captured_breast_morphs(basemesh, breast_deltas, old_to_new):
+    """Add breast shape keys from captured depsgraph deltas, remapped to body-only mesh."""
     mesh = basemesh.data
     num_verts = len(mesh.vertices)
 
     if not mesh.shape_keys:
         basemesh.shape_key_add(name="Basis", from_mix=False)
 
-    # Load raw target offsets
-    # averagefirmness = natural middle ground (maxfirm points UP, minfirm sags DOWN)
-    maxcup = load_target_offsets(target_dir,
-        "breast/female-young-averagemuscle-averageweight-maxcup-averagefirmness",
-        old_to_new, num_verts)
-    mincup = load_target_offsets(target_dir,
-        "breast/female-young-averagemuscle-averageweight-mincup-averagefirmness",
-        old_to_new, num_verts)
-    maxfirm = load_target_offsets(target_dir,
-        "breast/female-young-averagemuscle-averageweight-averagecup-maxfirmness",
-        old_to_new, num_verts)
-    minfirm = load_target_offsets(target_dir,
-        "breast/female-young-averagemuscle-averageweight-averagecup-minfirmness",
-        old_to_new, num_verts)
-
-    # Composite definitions: (name, [(offsets_dict, scale), ...])
-    # v0.0.13 used 0.25 scale and user said "almost looks like a breast" — just needs more volume
-    composites = [
-        ("breast-size-incr", [
-            (maxcup, 0.8),        # averagefirmness = natural shape, higher scale for volume
-        ]),
-        ("breast-size-decr", [
-            (mincup, 0.8),        # shrink/flatten
-        ]),
-        ("breast-firmness-incr", [
-            (maxfirm, 0.6),       # perky/firm (lifts up)
-        ]),
-        ("breast-firmness-decr", [
-            (minfirm, 0.6),       # saggy/droopy
-        ]),
-    ]
-
     created = 0
-    for sk_name, components in composites:
-        # Merge all vertex indices from all components
-        all_indices = set()
-        for offsets, _ in components:
-            all_indices.update(offsets.keys())
+    for sk_name, offsets_orig in breast_deltas.items():
+        # Remap from original vertex indices to body-only indices
+        remapped = {}
+        for orig_idx, (dx, dy, dz) in offsets_orig.items():
+            new_idx = old_to_new.get(orig_idx)
+            if new_idx is not None and new_idx < num_verts:
+                remapped[new_idx] = (dx, dy, dz)
+
+        if not remapped:
+            print(f"  {sk_name}: no vertices after remap, skipping")
+            continue
 
         sk = basemesh.shape_key_add(name=sk_name, from_mix=False)
-        applied = 0
-        for idx in all_indices:
-            dx, dy, dz = 0.0, 0.0, 0.0
-            for offsets, scale in components:
-                if idx in offsets:
-                    ox, oy, oz = offsets[idx]
-                    dx += ox * scale
-                    dy += oy * scale
-                    dz += oz * scale
-            if abs(dx) > 1e-7 or abs(dy) > 1e-7 or abs(dz) > 1e-7:
-                base = mesh.vertices[idx].co
-                sk.data[idx].co.x = base.x + dx
-                sk.data[idx].co.y = base.y + dy
-                sk.data[idx].co.z = base.z + dz
-                applied += 1
-
+        for idx, (dx, dy, dz) in remapped.items():
+            base = mesh.vertices[idx].co
+            sk.data[idx].co.x = base.x + dx
+            sk.data[idx].co.y = base.y + dy
+            sk.data[idx].co.z = base.z + dz
         sk.value = 0.0
-        print(f"  {sk_name}: {applied} vertices")
+
+        print(f"  {sk_name}: {len(remapped)} vertices")
         created += 1
 
     return created
@@ -472,7 +532,13 @@ def main():
 
     print(f"Base mesh: {basemesh.name}, vertices: {len(basemesh.data.vertices)}")
 
-    # STEP 0: Remove MPFB2's default shape keys (they have non-zero values
+    # STEP 0a: Capture breast deltas from MPFB2's parametric system BEFORE removing keys.
+    # This uses depsgraph to get the EXACT vertex positions MakeHuman computes,
+    # rather than guessing at scale factors for raw .target files.
+    print("\nStep 0a: Capturing breast morphs from MPFB2 parametric system...")
+    breast_deltas = capture_breast_deltas_from_mpfb2(basemesh)
+
+    # STEP 0b: Remove MPFB2's default shape keys (they have non-zero values
     # that distort the mesh). Must zero all values first, then remove
     # non-Basis keys before Basis so the mesh reverts to neutral position.
     if basemesh.data.shape_keys:
@@ -527,11 +593,14 @@ def main():
 
     print(f"\nLoaded {loaded}/{len(CURATED_TARGETS)} targets")
 
-    # STEP 4.5: Create composite breast morphs (cupsize + firmness blended)
-    print("\nStep 4.5: Creating composite breast morphs...")
-    breast_count = create_composite_breast_morphs(basemesh, target_dir, old_to_new)
-    loaded += breast_count
-    print(f"  Created {breast_count} composite breast morphs")
+    # STEP 4.5: Add breast morphs from captured depsgraph deltas
+    print("\nStep 4.5: Adding breast morphs from MPFB2 parametric capture...")
+    if breast_deltas:
+        breast_count = add_captured_breast_morphs(basemesh, breast_deltas, old_to_new)
+        loaded += breast_count
+        print(f"  Added {breast_count} breast morphs from parametric capture")
+    else:
+        print("  WARNING: No breast deltas captured, skipping")
 
     # STEP 4.6: Load symmetric targets (merge r- and l- into single shape keys)
     print("\nStep 4.6: Loading symmetric targets...")
