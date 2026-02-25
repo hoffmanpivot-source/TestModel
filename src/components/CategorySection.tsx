@@ -33,7 +33,7 @@ const SliderRow = memo(function SliderRow({
       <Slider
         style={styles.slider}
         minimumValue={0}
-        maximumValue={1}
+        maximumValue={0.5}
         step={0.01}
         value={value}
         onValueChange={(v) => onValueChange(name, v)}
