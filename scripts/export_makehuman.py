@@ -385,7 +385,14 @@ def main():
         print(f"Total shape keys: {num_keys}")
     print(f"Final vertex count: {len(basemesh.data.vertices)}")
 
-    # STEP 5: Smooth normals for better appearance
+    # STEP 5: Zero all shape key values so GLB exports with weights=[0,0,...]
+    # (Blender exports current values as default weights in the GLB)
+    if basemesh.data.shape_keys:
+        for sk in basemesh.data.shape_keys.key_blocks[1:]:
+            sk.value = 0.0
+        print("Zeroed all shape key values for export")
+
+    # STEP 6: Smooth normals for better appearance
     bpy.context.view_layer.objects.active = basemesh
     basemesh.select_set(True)
     bpy.ops.object.shade_smooth()
