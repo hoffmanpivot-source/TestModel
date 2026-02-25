@@ -51,24 +51,30 @@ export function useMorphTargets() {
   const setMorphValue = useCallback((targetName: string, value: number) => {
     setMorphState((prev) => ({ ...prev, [targetName]: value }));
 
-    // Check if this is a paired target (base name) or solo
-    const incrName = targetName + "-incr";
-    const decrName = targetName + "-decr";
+    // Check paired patterns: incr/decr or up/down
+    const pairSuffixes: [string, string][] = [
+      ["-incr", "-decr"],
+      ["-up", "-down"],
+    ];
 
     for (const mesh of meshesRef.current) {
       if (!mesh.morphTargetDictionary || !mesh.morphTargetInfluences) continue;
 
-      const hasIncr = incrName in mesh.morphTargetDictionary;
-      const hasDecr = decrName in mesh.morphTargetDictionary;
+      let applied = false;
+      for (const [posSuffix, negSuffix] of pairSuffixes) {
+        const posName = targetName + posSuffix;
+        const negName = targetName + negSuffix;
+        if (posName in mesh.morphTargetDictionary && negName in mesh.morphTargetDictionary) {
+          const posIdx = mesh.morphTargetDictionary[posName];
+          const negIdx = mesh.morphTargetDictionary[negName];
+          mesh.morphTargetInfluences[posIdx] = Math.max(0, value);
+          mesh.morphTargetInfluences[negIdx] = Math.max(0, -value);
+          applied = true;
+          break;
+        }
+      }
 
-      if (hasIncr && hasDecr) {
-        // Paired: positive → incr, negative → decr
-        const incrIdx = mesh.morphTargetDictionary[incrName];
-        const decrIdx = mesh.morphTargetDictionary[decrName];
-        mesh.morphTargetInfluences[incrIdx] = Math.max(0, value);
-        mesh.morphTargetInfluences[decrIdx] = Math.max(0, -value);
-      } else if (targetName in mesh.morphTargetDictionary) {
-        // Solo target
+      if (!applied && targetName in mesh.morphTargetDictionary) {
         const idx = mesh.morphTargetDictionary[targetName];
         mesh.morphTargetInfluences[idx] = value;
       }

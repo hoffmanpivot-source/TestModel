@@ -118,9 +118,11 @@ CURATED_TARGETS = [
     "buttocks/buttocks-volume-incr",
     "buttocks/buttocks-volume-decr",
 
-    # ===== BREAST (6) =====
+    # ===== BREAST (8) =====
     "breast/breast-dist-incr",
     "breast/breast-dist-decr",
+    "breast/breast-point-incr",
+    "breast/breast-point-decr",
     "breast/breast-trans-up",
     "breast/breast-trans-down",
     "breast/breast-volume-vert-up",

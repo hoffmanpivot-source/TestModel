@@ -1,4 +1,4 @@
-import React, { memo } from "react";
+import React, { memo, useCallback } from "react";
 import {
   StyleSheet,
   Text,
@@ -16,6 +16,9 @@ interface Props {
   onValueChange: (targetName: string, value: number) => void;
 }
 
+// Snap to zero when within this threshold
+const SNAP_THRESHOLD = 0.03;
+
 const SliderRow = memo(function SliderRow({
   name,
   value,
@@ -29,6 +32,16 @@ const SliderRow = memo(function SliderRow({
 }) {
   const minVal = isPaired ? -0.5 : 0;
   const maxVal = 0.5;
+
+  const handleChange = useCallback(
+    (v: number) => {
+      // Snap to zero near center
+      const snapped = Math.abs(v) < SNAP_THRESHOLD ? 0 : v;
+      onValueChange(name, snapped);
+    },
+    [name, onValueChange]
+  );
+
   return (
     <View style={styles.sliderRow}>
       <Text style={styles.targetName} numberOfLines={1}>
@@ -40,7 +53,7 @@ const SliderRow = memo(function SliderRow({
         maximumValue={maxVal}
         step={0.01}
         value={value}
-        onValueChange={(v) => onValueChange(name, v)}
+        onValueChange={handleChange}
         minimumTrackTintColor={isPaired ? "#666" : "#4A90D9"}
         maximumTrackTintColor={isPaired ? "#666" : "#555"}
         thumbTintColor="#4A90D9"

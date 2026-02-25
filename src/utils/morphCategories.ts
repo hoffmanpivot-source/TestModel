@@ -40,30 +40,38 @@ export function categorizeMorphTargets(
       categoryMap.set(category, []);
     }
 
-    // Check for incr/decr pairing
+    // Check for paired targets: incr/decr or up/down
+    const pairPatterns: [string, string][] = [
+      ["-incr", "-decr"],
+      ["-up", "-down"],
+    ];
     let paired = false;
-    if (name.endsWith("-incr")) {
-      const base = name.slice(0, -5);
-      const decrName = base + "-decr";
-      if (decrName in morphTargetDictionary) {
-        handled.add(name);
-        handled.add(decrName);
-        categoryMap.get(category)!.push({
-          name: base,  // display name without incr/decr
-          index,
-          value: currentValues[name] ?? 0,
-          pairedDecrIndex: morphTargetDictionary[decrName],
-          incrName: name,
-          decrName,
-        });
-        paired = true;
-      }
-    } else if (name.endsWith("-decr")) {
-      const base = name.slice(0, -5);
-      const incrName = base + "-incr";
-      if (incrName in morphTargetDictionary) {
-        // Will be handled when we process the incr name
-        continue;
+    for (const [posSuffix, negSuffix] of pairPatterns) {
+      if (name.endsWith(posSuffix)) {
+        const base = name.slice(0, -posSuffix.length);
+        const negName = base + negSuffix;
+        if (negName in morphTargetDictionary) {
+          handled.add(name);
+          handled.add(negName);
+          categoryMap.get(category)!.push({
+            name: base,
+            index,
+            value: currentValues[name] ?? 0,
+            pairedDecrIndex: morphTargetDictionary[negName],
+            incrName: name,
+            decrName: negName,
+          });
+          paired = true;
+          break;
+        }
+      } else if (name.endsWith(negSuffix)) {
+        const base = name.slice(0, -negSuffix.length);
+        const posName = base + posSuffix;
+        if (posName in morphTargetDictionary) {
+          // Will be handled when we process the positive name
+          paired = true;
+          break;
+        }
       }
     }
 
