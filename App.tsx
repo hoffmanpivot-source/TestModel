@@ -8,7 +8,8 @@ import { MorphPanel } from "./src/components/MorphPanel";
 import { useMorphTargets } from "./src/hooks/useMorphTargets";
 
 /* eslint-disable @typescript-eslint/no-require-imports */
-const MODEL_ASSET = require("./assets/models/makehuman_base.glb");
+// Testing: no shape keys to isolate rendering issue
+const MODEL_ASSET = require("./assets/models/makehuman_nokeys.glb");
 
 export default function App() {
   const [modelError, setModelError] = useState<string | null>(null);
