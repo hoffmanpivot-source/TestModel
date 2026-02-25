@@ -327,6 +327,20 @@ def main():
 
     print(f"Base mesh: {basemesh.name}, vertices: {len(basemesh.data.vertices)}")
 
+    # STEP 0: Remove MPFB2's default shape keys (they have non-zero values
+    # that distort the mesh). We'll re-add our own targets later.
+    if basemesh.data.shape_keys:
+        num_default = len(basemesh.data.shape_keys.key_blocks)
+        print(f"\nStep 0: Removing {num_default} MPFB2 default shape keys...")
+        for sk in list(basemesh.data.shape_keys.key_blocks):
+            print(f"  Removing: {sk.name} (value={sk.value:.3f})")
+        # Use data-level API (works in background mode)
+        while basemesh.data.shape_keys:
+            basemesh.shape_key_remove(basemesh.data.shape_keys.key_blocks[0])
+        print(f"  All default shape keys removed")
+    else:
+        print("\nStep 0: No default shape keys to remove")
+
     # STEP 1: Build vertex index map BEFORE removing helpers
     print("\nStep 1: Building vertex index map...")
     old_to_new = build_vertex_index_map(basemesh)
