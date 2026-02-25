@@ -10,7 +10,7 @@ import {
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { Asset } from "expo-asset";
-import * as LegacyFS from "expo-file-system/build/legacy";
+import * as LegacyFS from "expo-file-system/legacy";
 import { captureScreen } from "react-native-view-shot";
 import * as THREE from "three";
 import { ModelViewer } from "./src/components/ModelViewer";
