@@ -140,7 +140,7 @@ export function ModelViewer({ modelUri, onModelLoaded, onError, version }: Props
 
         // Single finger: rotate (orbit)
         if (!isTwoFingerRef.current && gestureState.numberActiveTouches === 1) {
-          const sensitivity = 0.005;
+          const sensitivity = 0.002;
           orbitRef.current.theta -= gestureState.dx * sensitivity;
           orbitRef.current.phi -= gestureState.dy * sensitivity;
           updateCamera();
