@@ -494,6 +494,123 @@ def add_captured_breast_morphs(basemesh, breast_deltas, old_to_new):
     return created
 
 
+# System assets to load as separate meshes (eyes, eyebrows, eyelashes, teeth)
+# Paths relative to assets/system/ in project root
+SYSTEM_ASSETS = [
+    ("Eyes",      "eyes/low-poly/low-poly.mhclo"),
+    ("Eyebrows",  "eyebrows/eyebrow001/eyebrow001.mhclo"),
+    ("Eyelashes", "eyelashes/eyelashes01/eyelashes01.mhclo"),
+    ("Teeth",     "teeth/teeth_base/teeth_base.mhclo"),
+]
+
+
+def load_system_assets(basemesh):
+    """Load system assets (eyes, eyebrows, eyelashes, teeth) as separate meshes.
+
+    Uses Blender's OBJ importer directly (no MPFB2 dependency). The .obj files
+    from the MakeHuman system assets are pre-positioned to match the basemesh
+    at scale=0.1.
+
+    Must be called while the basemesh still has its full vertex set,
+    as the assets are pre-fitted to the default human proportions.
+    """
+    system_dir = os.path.join(PROJECT_DIR, "assets", "system")
+    loaded = []
+
+    for name, rel_path in SYSTEM_ASSETS:
+        mhclo_path = os.path.join(system_dir, rel_path)
+        if not os.path.exists(mhclo_path):
+            print(f"  MISSING: {mhclo_path}")
+            continue
+
+        # Find the .obj file referenced in the .mhclo
+        mhclo_dir = os.path.dirname(mhclo_path)
+        obj_file = None
+        tex_file = None
+        mat_file = None
+
+        # Parse mhclo for obj_file and material references
+        with open(mhclo_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("obj_file "):
+                    obj_file = os.path.join(mhclo_dir, line.split(None, 1)[1])
+                elif line.startswith("material "):
+                    mat_ref = line.split(None, 1)[1]
+                    mat_file = os.path.join(mhclo_dir, mat_ref)
+
+        if not obj_file or not os.path.exists(obj_file):
+            print(f"  {name}: no obj file found")
+            continue
+
+        # Find texture from .mhmat file
+        if mat_file and os.path.exists(mat_file):
+            mat_dir = os.path.dirname(mat_file)
+            with open(mat_file, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("diffuseTexture "):
+                        tex_ref = line.split(None, 1)[1]
+                        tex_file = os.path.join(mat_dir, tex_ref)
+
+        try:
+            # Import the OBJ
+            before_objs = set(bpy.data.objects.keys())
+            bpy.ops.wm.obj_import(filepath=obj_file, forward_axis='NEGATIVE_Z', up_axis='Y')
+            after_objs = set(bpy.data.objects.keys())
+            new_objs = after_objs - before_objs
+
+            if not new_objs:
+                print(f"  {name}: OBJ import produced no objects")
+                continue
+
+            asset_obj = bpy.data.objects[list(new_objs)[0]]
+            asset_obj.name = name.lower()
+
+            # Scale to match basemesh (MH assets are at scale 1, basemesh at 0.1)
+            asset_obj.scale = basemesh.scale
+
+            # Create material with texture
+            mat = bpy.data.materials.new(name=f"{name}_mat")
+            mat.use_nodes = True
+            bsdf = mat.node_tree.nodes.get("Principled BSDF")
+
+            if tex_file and os.path.exists(tex_file):
+                tex_node = mat.node_tree.nodes.new("ShaderNodeTexImage")
+                tex_node.image = bpy.data.images.load(tex_file)
+                mat.node_tree.links.new(tex_node.outputs["Color"], bsdf.inputs["Base Color"])
+
+                # Alpha transparency for eyebrows/eyelashes
+                if name in ("Eyebrows", "Eyelashes"):
+                    mat.node_tree.links.new(tex_node.outputs["Alpha"], bsdf.inputs["Alpha"])
+                    if hasattr(mat, 'blend_method'):
+                        mat.blend_method = 'HASHED'
+                    if hasattr(mat, 'shadow_method'):
+                        mat.shadow_method = 'HASHED'
+                    mat.use_backface_culling = False
+            else:
+                # Fallback colors
+                if name == "Eyes":
+                    bsdf.inputs["Base Color"].default_value = (0.9, 0.9, 0.9, 1.0)
+                elif name == "Teeth":
+                    bsdf.inputs["Base Color"].default_value = (0.95, 0.93, 0.88, 1.0)
+
+            # Replace any existing materials
+            asset_obj.data.materials.clear()
+            asset_obj.data.materials.append(mat)
+
+            vcount = len(asset_obj.data.vertices)
+            print(f"  {name}: loaded ({vcount} vertices, tex={'yes' if tex_file else 'no'})")
+            loaded.append(asset_obj)
+
+        except Exception as e:
+            print(f"  {name}: FAILED - {e}")
+            import traceback
+            traceback.print_exc()
+
+    return loaded
+
+
 def main():
     print("=" * 60)
     print("MakeHuman -> GLB Export (Helper-Free, Mobile-Friendly)")
@@ -538,7 +655,13 @@ def main():
     print("\nStep 0a: Capturing breast morphs from MPFB2 parametric system...")
     breast_deltas = capture_breast_deltas_from_mpfb2(basemesh)
 
-    # STEP 0b: Remove MPFB2's default shape keys (they have non-zero values
+    # STEP 0b: Load system assets (eyes, eyebrows, eyelashes, teeth)
+    # Must happen while basemesh still has full vertex set for mhclo fitting
+    print("\nStep 0b: Loading system assets...")
+    system_assets = load_system_assets(basemesh)
+    print(f"  Loaded {len(system_assets)} system assets")
+
+    # STEP 0c: Remove MPFB2's default shape keys (they have non-zero values
     # that distort the mesh). Must zero all values first, then remove
     # non-Basis keys before Basis so the mesh reverts to neutral position.
     if basemesh.data.shape_keys:
@@ -694,10 +817,12 @@ def main():
     print(f"  Rebuilt {len(sk_data)} shape keys on subdivided mesh")
 
     # STEP 6: Smooth normals for better appearance
-    bpy.context.view_layer.objects.active = basemesh
-    basemesh.select_set(True)
-    bpy.ops.object.shade_smooth()
-    print("Applied smooth shading")
+    for obj in [basemesh] + system_assets:
+        bpy.context.view_layer.objects.active = obj
+        obj.select_set(True)
+        bpy.ops.object.shade_smooth()
+        obj.select_set(False)
+    print("Applied smooth shading to all meshes")
 
     # STEP 7: Export
     os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
