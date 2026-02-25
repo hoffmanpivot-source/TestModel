@@ -118,7 +118,7 @@ CURATED_TARGETS = [
     "buttocks/buttocks-volume-incr",
     "buttocks/buttocks-volume-decr",
 
-    # ===== BREAST (8) =====
+    # ===== BREAST (12) =====
     "breast/breast-dist-incr",
     "breast/breast-dist-decr",
     "breast/breast-point-incr",
@@ -127,6 +127,11 @@ CURATED_TARGETS = [
     "breast/breast-trans-down",
     "breast/breast-volume-vert-up",
     "breast/breast-volume-vert-down",
+    # Cup size (breast volume) and firmness — female young average body
+    "breast/female-young-averagemuscle-averageweight-maxcup-averagefirmness",
+    "breast/female-young-averagemuscle-averageweight-mincup-averagefirmness",
+    "breast/female-young-averagemuscle-averageweight-averagecup-maxfirmness",
+    "breast/female-young-averagemuscle-averageweight-averagecup-minfirmness",
 
     # ===== ARMS — right side (4) =====
     "arms/r-upperarm-muscle-incr",
@@ -140,6 +145,14 @@ CURATED_TARGETS = [
     "legs/r-upperleg-fat-incr",
     "legs/r-upperleg-fat-decr",
 ]
+
+# Rename long combo target filenames to clean shape key names
+TARGET_NAME_OVERRIDES = {
+    "female-young-averagemuscle-averageweight-maxcup-averagefirmness": "breast-size-incr",
+    "female-young-averagemuscle-averageweight-mincup-averagefirmness": "breast-size-decr",
+    "female-young-averagemuscle-averageweight-averagecup-maxfirmness": "breast-firmness-incr",
+    "female-young-averagemuscle-averageweight-averagecup-minfirmness": "breast-firmness-decr",
+}
 
 
 def clear_scene():
@@ -374,7 +387,8 @@ def main():
         if not target_path:
             print(f"  MISSING: {target_spec}")
             continue
-        sk_name = os.path.basename(target_spec)
+        raw_name = os.path.basename(target_spec)
+        sk_name = TARGET_NAME_OVERRIDES.get(raw_name, raw_name)
         try:
             affected = load_target_with_remap(basemesh, target_path, sk_name, old_to_new)
             loaded += 1
