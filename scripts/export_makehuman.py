@@ -422,7 +422,7 @@ def main():
         use_selection=False,
         export_apply=False,
         export_morph=True,
-        export_morph_normal=False,
+        export_morph_normal=True,
         export_morph_tangent=False,
         export_yup=True,
     )
