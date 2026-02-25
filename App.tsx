@@ -17,11 +17,11 @@ import { ModelViewer } from "./src/components/ModelViewer";
 import { MorphPanel } from "./src/components/MorphPanel";
 import { useMorphTargets } from "./src/hooks/useMorphTargets";
 
-const APP_VERSION = "0.0.19";
+const APP_VERSION = "0.0.20";
 
 /* eslint-disable @typescript-eslint/no-require-imports */
-// Full model with 77 morph targets (dense format - sparse broken on expo-three)
-const MODEL_ASSET = require("./assets/models/makehuman_base_dense.glb");
+// Try sparse format directly (6MB vs 52MB dense)
+const MODEL_ASSET = require("./assets/models/makehuman_base.glb");
 
 const DEV_SCREENSHOT_URL = "http://10.1.1.19:8766/screenshot";
 
