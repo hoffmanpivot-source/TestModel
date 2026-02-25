@@ -60,21 +60,13 @@ glTF/GLB files can encode morph targets in two ways:
 
 Blender exports morph targets in **sparse** format by default. This is efficient (a nose morph only stores the ~200 affected vertices, not all 53,000).
 
-### The Problem
+### Sparse Works Fine (Updated)
 
-**Three.js on expo-three/React Native does not correctly render sparse morph target accessors.** The morph targets silently fail — sliders move but the mesh doesn't deform. No errors are thrown.
+**UPDATE:** Sparse morph targets DO work correctly on expo-three/React Native. We initially believed they were broken because morphs silently failed to deform the mesh. The actual problem was incorrect morph target data (wrong scale factors on raw `.target` files), not the sparse accessor format.
 
-This affects:
-- expo-gl + expo-three (tested with Expo SDK 54)
-- React Native 0.81 with Three.js r174
+**Sparse is the recommended format.** File size: ~6MB (sparse) vs ~52MB (dense) for 71 morph targets on a 53K vertex mesh.
 
-Desktop Three.js handles sparse accessors fine. This is a mobile/expo-gl specific issue.
-
-### The Solution
-
-Convert sparse accessors to dense format using a post-processing script (see [Sparse-to-Dense Conversion](#sparse-to-dense-glb-conversion) below). This trades file size for compatibility.
-
-**File size impact:** A model with 71 morph targets goes from ~6MB (sparse) to ~52MB (dense). The dense file is larger because every morph target stores deltas for all 53K vertices (mostly zeros).
+A `sparse_to_dense.js` conversion script is included in the repo as a fallback if you ever encounter a genuine sparse rendering issue, but it should not be needed.
 
 ---
 
