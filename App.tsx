@@ -17,11 +17,11 @@ import { ModelViewer } from "./src/components/ModelViewer";
 import { MorphPanel } from "./src/components/MorphPanel";
 import { useMorphTargets } from "./src/hooks/useMorphTargets";
 
-const APP_VERSION = "0.0.3";
+const APP_VERSION = "0.0.4";
 
 /* eslint-disable @typescript-eslint/no-require-imports */
-// Testing: dense morph targets (non-sparse) to rule out sparse accessor bug
-const MODEL_ASSET = require("./assets/models/makehuman_2keys_dense.glb");
+// Full model with 77 morph targets (dense format - sparse broken on expo-three)
+const MODEL_ASSET = require("./assets/models/makehuman_base_dense.glb");
 
 const DEV_SCREENSHOT_URL = "http://10.1.1.19:8766/screenshot";
 
