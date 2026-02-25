@@ -20,23 +20,61 @@ function classifyTarget(name: string): string {
 /**
  * Given a dictionary of morph target names → indices,
  * organize them into categorized groups.
+ * Pairs incr/decr targets into single bidirectional entries.
  */
 export function categorizeMorphTargets(
   morphTargetDictionary: Record<string, number>,
   currentValues: Record<string, number>
 ): MorphCategory[] {
   const categoryMap = new Map<string, MorphTarget[]>();
+  const handled = new Set<string>();
 
-  for (const [name, index] of Object.entries(morphTargetDictionary)) {
+  const names = Object.keys(morphTargetDictionary);
+
+  for (const name of names) {
+    if (handled.has(name)) continue;
+
+    const index = morphTargetDictionary[name];
     const category = classifyTarget(name);
     if (!categoryMap.has(category)) {
       categoryMap.set(category, []);
     }
-    categoryMap.get(category)!.push({
-      name,
-      index,
-      value: currentValues[name] ?? 0,
-    });
+
+    // Check for incr/decr pairing
+    let paired = false;
+    if (name.endsWith("-incr")) {
+      const base = name.slice(0, -5);
+      const decrName = base + "-decr";
+      if (decrName in morphTargetDictionary) {
+        handled.add(name);
+        handled.add(decrName);
+        categoryMap.get(category)!.push({
+          name: base,  // display name without incr/decr
+          index,
+          value: currentValues[name] ?? 0,
+          pairedDecrIndex: morphTargetDictionary[decrName],
+          incrName: name,
+          decrName,
+        });
+        paired = true;
+      }
+    } else if (name.endsWith("-decr")) {
+      const base = name.slice(0, -5);
+      const incrName = base + "-incr";
+      if (incrName in morphTargetDictionary) {
+        // Will be handled when we process the incr name
+        continue;
+      }
+    }
+
+    if (!paired) {
+      handled.add(name);
+      categoryMap.get(category)!.push({
+        name,
+        index,
+        value: currentValues[name] ?? 0,
+      });
+    }
   }
 
   // Sort targets within each category alphabetically

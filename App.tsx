@@ -17,7 +17,7 @@ import { ModelViewer } from "./src/components/ModelViewer";
 import { MorphPanel } from "./src/components/MorphPanel";
 import { useMorphTargets } from "./src/hooks/useMorphTargets";
 
-const APP_VERSION = "0.0.6";
+const APP_VERSION = "0.0.7";
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 // Full model with 77 morph targets (dense format - sparse broken on expo-three)

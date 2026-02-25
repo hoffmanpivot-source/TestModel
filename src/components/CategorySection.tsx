@@ -19,12 +19,16 @@ interface Props {
 const SliderRow = memo(function SliderRow({
   name,
   value,
+  isPaired,
   onValueChange,
 }: {
   name: string;
   value: number;
+  isPaired: boolean;
   onValueChange: (name: string, value: number) => void;
 }) {
+  const minVal = isPaired ? -0.5 : 0;
+  const maxVal = 0.5;
   return (
     <View style={styles.sliderRow}>
       <Text style={styles.targetName} numberOfLines={1}>
@@ -32,13 +36,13 @@ const SliderRow = memo(function SliderRow({
       </Text>
       <Slider
         style={styles.slider}
-        minimumValue={0}
-        maximumValue={0.5}
+        minimumValue={minVal}
+        maximumValue={maxVal}
         step={0.01}
         value={value}
         onValueChange={(v) => onValueChange(name, v)}
-        minimumTrackTintColor="#4A90D9"
-        maximumTrackTintColor="#555"
+        minimumTrackTintColor={isPaired ? "#666" : "#4A90D9"}
+        maximumTrackTintColor={isPaired ? "#666" : "#555"}
         thumbTintColor="#4A90D9"
       />
       <Text style={styles.valueText}>{value.toFixed(2)}</Text>
@@ -73,6 +77,7 @@ export const CategorySection = memo(function CategorySection({
               key={target.name}
               name={target.name}
               value={morphState[target.name] ?? 0}
+              isPaired={target.pairedDecrIndex != null}
               onValueChange={onValueChange}
             />
           ))}

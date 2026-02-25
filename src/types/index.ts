@@ -1,7 +1,11 @@
 export interface MorphTarget {
-  name: string;
-  index: number;
+  name: string;       // display name (shared base for pairs)
+  index: number;      // index of incr target (or solo target)
   value: number;
+  // For paired incr/decr targets:
+  pairedDecrIndex?: number;  // index of the decr target
+  incrName?: string;         // raw incr target name
+  decrName?: string;         // raw decr target name
 }
 
 export interface MorphCategory {
