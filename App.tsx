@@ -15,17 +15,38 @@ import { captureScreen } from "react-native-view-shot";
 import * as THREE from "three";
 import { ModelViewer } from "./src/components/ModelViewer";
 import { MorphPanel } from "./src/components/MorphPanel";
+import { ClothingPanel } from "./src/components/ClothingPanel";
 import { useMorphTargets } from "./src/hooks/useMorphTargets";
 
 const APP_VERSION = "0.0.32";
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const MODEL_ASSET = require("./assets/models/makehuman_base.glb");
-const CLOTHING_ASSETS = [
-  { glb: require("./assets/models/clothing/sweater.glb"), tex: require("./assets/models/clothing/sweater_diffuse.png") },
-  { glb: require("./assets/models/clothing/pants.glb"), tex: require("./assets/models/clothing/pants_diffuse.png") },
-  { glb: require("./assets/models/clothing/boots.glb"), tex: require("./assets/models/clothing/boots_diffuse.png") },
-];
+
+interface ClothingVariant {
+  id: string;
+  label: string;
+  glb: number;
+  tex: number;
+}
+
+const ALL_CLOTHING = {
+  tops: [
+    { id: "sweater", label: "Sweater", glb: require("./assets/models/clothing/sweater.glb"), tex: require("./assets/models/clothing/sweater_diffuse.png") },
+    { id: "camisole", label: "Camisole", glb: require("./assets/models/clothing/camisole.glb"), tex: require("./assets/models/clothing/camisole_diffuse.png") },
+    { id: "tshirt", label: "T-Shirt", glb: require("./assets/models/clothing/tshirt.glb"), tex: require("./assets/models/clothing/tshirt_diffuse.png") },
+  ] as ClothingVariant[],
+  pants: [
+    { id: "pants", label: "Wool Pants", glb: require("./assets/models/clothing/pants.glb"), tex: require("./assets/models/clothing/pants_diffuse.png") },
+    { id: "harempants", label: "Harem Pants", glb: require("./assets/models/clothing/harempants.glb"), tex: require("./assets/models/clothing/harempants_diffuse.png") },
+    { id: "cargopants", label: "Cargo Pants", glb: require("./assets/models/clothing/cargopants.glb"), tex: require("./assets/models/clothing/cargopants_diffuse.png") },
+  ] as ClothingVariant[],
+  shoes: [
+    { id: "boots", label: "Ankle Boots", glb: require("./assets/models/clothing/boots.glb"), tex: require("./assets/models/clothing/boots_diffuse.png") },
+    { id: "flats", label: "Ballet Flats", glb: require("./assets/models/clothing/flats.glb"), tex: require("./assets/models/clothing/flats_diffuse.png") },
+    { id: "booties", label: "Booties", glb: require("./assets/models/clothing/booties.glb"), tex: require("./assets/models/clothing/booties_diffuse.png") },
+  ] as ClothingVariant[],
+};
 
 const DEV_SCREENSHOT_URL = "http://10.1.1.19:8766/screenshot";
 
@@ -34,6 +55,10 @@ export default function App() {
   const [modelUri, setModelUri] = useState<string | null>(null);
   const [clothingItems, setClothingItems] = useState<Array<{ glbUri: string; texUri: string }>>([]);
   const [assetReady, setAssetReady] = useState(false);
+  const [selectedTop, setSelectedTop] = useState("sweater");
+  const [selectedPants, setSelectedPants] = useState("pants");
+  const [selectedShoes, setSelectedShoes] = useState("boots");
+  const [clothingLoading, setClothingLoading] = useState(false);
   const {
     categories,
     morphState,
@@ -47,6 +72,7 @@ export default function App() {
     targetCount,
   } = useMorphTargets();
 
+  // Load body model once
   useEffect(() => {
     (async () => {
       try {
@@ -57,25 +83,49 @@ export default function App() {
         if (asset.localUri) {
           setModelUri(asset.localUri);
         }
-
-        // Load clothing assets (GLB + texture pairs)
-        const items: Array<{ glbUri: string; texUri: string }> = [];
-        for (const { glb, tex } of CLOTHING_ASSETS) {
-          const glbAsset = Asset.fromModule(glb);
-          const texAsset = Asset.fromModule(tex);
-          await Promise.all([glbAsset.downloadAsync(), texAsset.downloadAsync()]);
-          if (glbAsset.localUri && texAsset.localUri) {
-            items.push({ glbUri: glbAsset.localUri, texUri: texAsset.localUri });
-            console.log("[App] Clothing:", glbAsset.localUri);
-          }
-        }
-        setClothingItems(items);
       } catch (err) {
         console.warn("[App] Failed to load model asset:", err);
       }
       setAssetReady(true);
     })();
   }, []);
+
+  // Load clothing when selection changes
+  useEffect(() => {
+    const top = ALL_CLOTHING.tops.find((t) => t.id === selectedTop);
+    const pant = ALL_CLOTHING.pants.find((p) => p.id === selectedPants);
+    const shoe = ALL_CLOTHING.shoes.find((s) => s.id === selectedShoes);
+    if (!top || !pant || !shoe) return;
+
+    let cancelled = false;
+    setClothingLoading(true);
+
+    (async () => {
+      try {
+        const selected = [top, pant, shoe];
+        const items: Array<{ glbUri: string; texUri: string }> = [];
+        for (const variant of selected) {
+          const glbAsset = Asset.fromModule(variant.glb);
+          const texAsset = Asset.fromModule(variant.tex);
+          await Promise.all([glbAsset.downloadAsync(), texAsset.downloadAsync()]);
+          if (glbAsset.localUri && texAsset.localUri) {
+            items.push({ glbUri: glbAsset.localUri, texUri: texAsset.localUri });
+            console.log("[App] Clothing:", variant.id, glbAsset.localUri);
+          }
+        }
+        if (!cancelled) {
+          setClothingItems(items);
+        }
+      } catch (err) {
+        console.warn("[App] Failed to load clothing:", err);
+      }
+      if (!cancelled) {
+        setClothingLoading(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [selectedTop, selectedPants, selectedShoes]);
 
   const handleModelLoaded = (scene: THREE.Group) => {
     initFromScene(scene);
@@ -229,7 +279,20 @@ export default function App() {
         </TouchableOpacity>
       </View>
 
-      {/* Morph Target Panel — bottom 45% */}
+      {/* Clothing selector */}
+      <ClothingPanel
+        tops={ALL_CLOTHING.tops}
+        pants={ALL_CLOTHING.pants}
+        shoes={ALL_CLOTHING.shoes}
+        selectedTop={selectedTop}
+        selectedPants={selectedPants}
+        selectedShoes={selectedShoes}
+        onSelectTop={setSelectedTop}
+        onSelectPants={setSelectedPants}
+        onSelectShoes={setSelectedShoes}
+      />
+
+      {/* Morph Target Panel — bottom */}
       <View style={styles.panel}>
         <MorphPanel
           categories={categories}

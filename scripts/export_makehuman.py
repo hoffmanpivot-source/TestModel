@@ -817,10 +817,20 @@ SYSTEM_ASSETS = [
 ]
 
 # Clothing assets — paths relative to assets/clothing/ in project root
+# Multiple options per category for runtime clothing switching
 CLOTHING_ASSETS = [
+    # Tops
     ("Sweater",    "toigo_fisherman_sweater/toigo_fisherman_sweater.mhclo"),
+    ("Camisole",   "toigo_camisole_top/toigo_camisole_top.mhclo"),
+    ("TShirt",     "toigo_basic_tucked_t-shirt/toigo_basic_tucked_t-shirt.mhclo"),
+    # Pants
     ("Pants",      "toigo_wool_pants/toigo_wool_pants.mhclo"),
+    ("HaremPants", "toigo_harem_pants/toigo_harem_pants.mhclo"),
+    ("CargoPants", "cortu_cargo_pants/cortu_cargo_pants.mhclo"),
+    # Shoes
     ("Boots",      "toigo_ankle_boots_female/toigo_ankle_boots_female.mhclo"),
+    ("Flats",      "toigo_ballet_flats/toigo_ballet_flats.mhclo"),
+    ("Booties",    "toigo_stiletto_booties/toigo_stiletto_booties.mhclo"),
 ]
 
 
@@ -1170,33 +1180,12 @@ def export_clothing_items(basemesh, all_morph_deltas=None):
             continue
 
         # Collect delete_verts for body masking.
-        # If .mhclo defines delete_verts, use those. Otherwise, for LOWER-BODY
-        # clothing only, compute from vertex mappings — body vertices referenced
-        # by the clothing's barycentric mappings are "under" the clothing.
-        # Upper-body clothing (sweaters, shirts) must NOT delete body verts
-        # because the neck/décolletage area would become invisible.
+        # Only use .mhclo-defined delete_verts (not computed from mappings),
+        # because with multiple clothing variants sharing one body mesh,
+        # computed delete_verts would be too aggressive for non-default outfits.
         if delete_verts:
             all_delete_verts.update(delete_verts)
             print(f"  {name}: {len(delete_verts)} delete_verts from .mhclo")
-        elif vertex_mappings:
-            is_lower_body = any(kw in name.lower() for kw in
-                ("pant", "trouser", "jean", "skirt", "short", "boot", "shoe", "sock"))
-            if is_lower_body:
-                computed_dv = set()
-                for mapping in vertex_mappings:
-                    if len(mapping) == 1:
-                        computed_dv.add(int(mapping[0]))
-                    elif len(mapping) == 9:
-                        v1, v2, v3 = int(mapping[0]), int(mapping[1]), int(mapping[2])
-                        computed_dv.add(v1)
-                        computed_dv.add(v2)
-                        computed_dv.add(v3)
-                # Only include body vertices (indices < 13380), not helper vertices
-                computed_dv = {v for v in computed_dv if v < 13380}
-                all_delete_verts.update(computed_dv)
-                print(f"  {name}: {len(computed_dv)} delete_verts computed from mappings")
-            else:
-                print(f"  {name}: skipping delete_verts (upper-body)")
 
         # Find texture
         tex_file = None
@@ -1263,10 +1252,10 @@ def export_clothing_items(basemesh, all_morph_deltas=None):
             import mathutils
             mesh_data = asset_obj.data
             name_lower = name.lower()
-            if any(kw in name_lower for kw in ("sweater", "shirt", "jacket", "top", "blouse")):
+            if any(kw in name_lower for kw in ("sweater", "shirt", "jacket", "top", "blouse", "camisole")):
                 offset_amount = 0.020  # outer layer — must clear pants waistband at overlap
-            elif any(kw in name_lower for kw in ("boot", "shoe")):
-                offset_amount = 0.010  # boots — outside socks/pants cuffs
+            elif any(kw in name_lower for kw in ("boot", "shoe", "flat", "bootie")):
+                offset_amount = 0.010  # footwear — outside socks/pants cuffs
             else:
                 offset_amount = 0.008  # inner layer (pants, etc.)
             for v in mesh_data.vertices:
