@@ -24,7 +24,13 @@ Implemented morph target transfer from body to clothing via barycentric interpol
 - Removed the runtime 0.008 normal offset push — clothing should now deform with body instead of relying on fixed offsets
 
 ### Status
-Blender export running, not yet tested in app.
+Testing in app — shoes/pants/tshirt issues addressed, awaiting visual confirmation
+
+### Issues Found & Addressed
+- **export_apply=True strips shape keys**: Clothing GLBs had 0 morph targets. Switched to explicit subdivision baking via depsgraph (same as body mesh), then export with export_apply=False
+- **Shoes deforming with breast slider**: Depsgraph breast captures included ALL body vertices (including feet). Fixed by spatial filtering — only include vertices in z=40-75% height range (chest area)
+- **Shoes export crash with empty morphs**: Basis shape key was added even when no morphs passed the filter. Deferred Basis creation until first morph target actually created
+- **Negligible morphs**: Added max_delta < 0.001 threshold to filter out morphs with imperceptible effect on a clothing item
 
 ### Key Insight
 `.mhclo` vertex mappings and `.target` files both use original basemesh vertex indices, so morph deltas can be interpolated onto clothing vertices without any index remapping. The barycentric weights in .mhclo directly reference the same vertex indices used in .target files.

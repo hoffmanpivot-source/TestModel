@@ -23,11 +23,18 @@ Implemented morph target transfer from body mesh to clothing meshes via barycent
 `.mhclo` vertex mappings and `.target` files both use original basemesh vertex indices — no index remapping needed for morph transfer.
 
 ## What's Next
-1. **Verify Blender export** — run export script, confirm clothing GLBs contain morph targets
-2. **Test in app** — load clothing GLBs, verify morphs sync between body and clothing
-3. **Visual QA** — check for gaps, poke-through, or artifacts at various morph values
-4. **Edge cases** — test extreme morph values (breast-size=1.0, weight=1.0)
+Several issues found and fixed during testing:
+- `export_apply=True` was stripping shape keys (0 morph targets in clothing GLBs) — switched to depsgraph subdivision baking + `export_apply=False`
+- Shoes deforming with breast slider due to unfiltered vertex captures — added z=40-75% spatial filter
+- Shoes export crash when no morphs pass filter — deferred Basis shape key creation
+- Added max_delta < 0.001 threshold to skip negligible morphs per clothing item
 
+**Current status**: Awaiting visual confirmation in app that clothing morphs work correctly.
+
+**Next steps**:
+1. Visual QA — verify no poke-through, gaps, or artifacts at various morph values
+2. Edge cases — test extreme morph values (breast-size=1.0, weight=1.0)
+3. Fine-tune spatial filtering ranges if other morphs show similar cross-contamination
 ## What Works
 - 38 morph targets on body mesh
 - System assets (eyes, eyebrows, eyelashes, teeth)
