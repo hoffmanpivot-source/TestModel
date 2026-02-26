@@ -11,7 +11,6 @@ import { GLView, ExpoWebGLRenderingContext } from "expo-gl";
 import { Renderer } from "expo-three";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { preprocessGLB } from "../utils/blobPolyfill";
 
 interface Props {
   modelUri: string | null;
@@ -171,11 +170,8 @@ export function ModelViewer({ modelUri, onModelLoaded, onError, version }: Props
             buffer.byteLength
           );
 
-          // Convert embedded textures to data URIs (RN Blob doesn't support ArrayBuffer)
-          const processedBuffer = preprocessGLB(buffer);
-
           loader.parse(
-            processedBuffer,
+            buffer,
             "",
             (gltf) => {
               console.log("[ModelViewer] GLTF parsed successfully");
