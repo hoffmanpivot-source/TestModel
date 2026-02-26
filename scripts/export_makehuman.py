@@ -817,21 +817,28 @@ SYSTEM_ASSETS = [
 ]
 
 # Clothing assets — paths relative to assets/clothing/ in project root
-# Multiple options per category for runtime clothing switching
-CLOTHING_ASSETS = [
-    # Tops
-    ("Sweater",    "toigo_fisherman_sweater/toigo_fisherman_sweater.mhclo"),
-    ("Camisole",   "toigo_camisole_top/toigo_camisole_top.mhclo"),
-    ("TShirt",     "toigo_basic_tucked_t-shirt/toigo_basic_tucked_t-shirt.mhclo"),
-    # Pants
-    ("Pants",      "toigo_wool_pants/toigo_wool_pants.mhclo"),
-    ("HaremPants", "toigo_harem_pants/toigo_harem_pants.mhclo"),
-    ("CargoPants", "cortu_cargo_pants/cortu_cargo_pants.mhclo"),
-    # Shoes
-    ("Boots",      "toigo_ankle_boots_female/toigo_ankle_boots_female.mhclo"),
-    ("Flats",      "toigo_ballet_flats/toigo_ballet_flats.mhclo"),
-    ("Booties",    "toigo_stiletto_booties/toigo_stiletto_booties.mhclo"),
-]
+# Multiple options per category for runtime clothing switching.
+# Category grouping used for delete_verts intersection (only delete body verts
+# covered by ALL variants in a category).
+CLOTHING_CATEGORIES = {
+    "tops": [
+        ("Sweater",    "toigo_fisherman_sweater/toigo_fisherman_sweater.mhclo"),
+        ("Camisole",   "toigo_camisole_top/toigo_camisole_top.mhclo"),
+        ("TShirt",     "toigo_basic_tucked_t-shirt/toigo_basic_tucked_t-shirt.mhclo"),
+    ],
+    "pants": [
+        ("Pants",      "toigo_wool_pants/toigo_wool_pants.mhclo"),
+        ("HaremPants", "toigo_harem_pants/toigo_harem_pants.mhclo"),
+        ("CargoPants", "cortu_cargo_pants/cortu_cargo_pants.mhclo"),
+    ],
+    "shoes": [
+        ("Boots",      "toigo_ankle_boots_female/toigo_ankle_boots_female.mhclo"),
+        ("Flats",      "toigo_ballet_flats/toigo_ballet_flats.mhclo"),
+        ("Booties",    "toigo_stiletto_booties/toigo_stiletto_booties.mhclo"),
+    ],
+}
+# Flat list for iteration
+CLOTHING_ASSETS = [item for cat in CLOTHING_CATEGORIES.values() for item in cat]
 
 
 def parse_mhclo(mhclo_path):
@@ -1167,7 +1174,11 @@ def export_clothing_items(basemesh, all_morph_deltas=None):
     os.makedirs(output_dir, exist_ok=True)
 
     exported = []
-    all_delete_verts = set()
+    # Collect delete_verts per category for intersection
+    category_delete_verts = {}  # category -> list of sets
+    for cat_name, items in CLOTHING_CATEGORIES.items():
+        category_delete_verts[cat_name] = []
+
     for name, rel_path in CLOTHING_ASSETS:
         mhclo_path = os.path.join(clothing_dir, rel_path)
         if not os.path.exists(mhclo_path):
@@ -1179,13 +1190,13 @@ def export_clothing_items(basemesh, all_morph_deltas=None):
             print(f"  {name}: no obj file found")
             continue
 
-        # Collect delete_verts for body masking.
-        # Only use .mhclo-defined delete_verts (not computed from mappings),
-        # because with multiple clothing variants sharing one body mesh,
-        # computed delete_verts would be too aggressive for non-default outfits.
-        if delete_verts:
-            all_delete_verts.update(delete_verts)
-            print(f"  {name}: {len(delete_verts)} delete_verts from .mhclo")
+        # Track delete_verts per category for intersection later
+        for cat_name, items in CLOTHING_CATEGORIES.items():
+            if any(n == name for n, _ in items):
+                category_delete_verts[cat_name].append(delete_verts if delete_verts else set())
+                if delete_verts:
+                    print(f"  {name}: {len(delete_verts)} delete_verts from .mhclo ({cat_name})")
+                break
 
         # Find texture
         tex_file = None
@@ -1252,10 +1263,12 @@ def export_clothing_items(basemesh, all_morph_deltas=None):
             import mathutils
             mesh_data = asset_obj.data
             name_lower = name.lower()
-            if any(kw in name_lower for kw in ("sweater", "shirt", "jacket", "top", "blouse", "camisole")):
-                offset_amount = 0.020  # outer layer — must clear pants waistband at overlap
+            if any(kw in name_lower for kw in ("sweater", "jacket")):
+                offset_amount = 0.020  # thick outer layer — must clear pants waistband
+            elif any(kw in name_lower for kw in ("camisole", "shirt", "top", "blouse")):
+                offset_amount = 0.005  # thin tops — close to body
             elif any(kw in name_lower for kw in ("boot", "shoe", "flat", "bootie")):
-                offset_amount = 0.010  # footwear — outside socks/pants cuffs
+                offset_amount = 0.010  # footwear
             else:
                 offset_amount = 0.008  # inner layer (pants, etc.)
             for v in mesh_data.vertices:
@@ -1390,7 +1403,25 @@ def export_clothing_items(basemesh, all_morph_deltas=None):
             import traceback
             traceback.print_exc()
 
-    print(f"  Total delete_verts from all clothing: {len(all_delete_verts)}")
+    # Compute safe delete_verts: INTERSECTION within each category, then UNION across categories.
+    # This ensures we only delete body verts that are covered by ALL variants in a category.
+    all_delete_verts = set()
+    for cat_name, dv_list in category_delete_verts.items():
+        if not dv_list:
+            continue
+        # If any variant in the category has no delete_verts, intersection is empty
+        non_empty = [s for s in dv_list if s]
+        if len(non_empty) < len(dv_list):
+            print(f"  {cat_name}: some variants have no delete_verts, skipping category")
+            continue
+        cat_intersection = non_empty[0]
+        for s in non_empty[1:]:
+            cat_intersection = cat_intersection & s
+        if cat_intersection:
+            print(f"  {cat_name}: {len(cat_intersection)} delete_verts (intersection of {len(dv_list)} variants)")
+            all_delete_verts.update(cat_intersection)
+
+    print(f"  Total safe delete_verts: {len(all_delete_verts)}")
     return exported, all_delete_verts
 
 
