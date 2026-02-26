@@ -17,7 +17,7 @@ import { ModelViewer } from "./src/components/ModelViewer";
 import { MorphPanel } from "./src/components/MorphPanel";
 import { useMorphTargets } from "./src/hooks/useMorphTargets";
 
-const APP_VERSION = "0.0.26";
+const APP_VERSION = "0.0.27";
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 // Try sparse format directly (6MB vs 52MB dense)

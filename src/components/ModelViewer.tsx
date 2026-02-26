@@ -16,6 +16,10 @@ import { stripEmbeddedTextures } from "../utils/glbPreprocess";
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const SKIN_TEXTURE = require("../../assets/textures/skin_diffuse.png");
+const EYE_TEXTURE = require("../../assets/textures/eye_diffuse.png");
+const EYEBROW_TEXTURE = require("../../assets/textures/eyebrow_diffuse.png");
+const EYELASH_TEXTURE = require("../../assets/textures/eyelash_diffuse.png");
+const TEETH_TEXTURE = require("../../assets/textures/teeth_diffuse.png");
 
 interface Props {
   modelUri: string | null;
@@ -260,77 +264,100 @@ export function ModelViewer({ modelUri, onModelLoaded, onError, version }: Props
               });
               console.log("[ModelViewer] Total morph targets:", morphCount);
 
-              // Load skin texture and apply materials
+              // Load all textures externally (RN Blob can't handle embedded GLB textures)
               const texLoader = new ExpoTextureLoader();
-              texLoader.load(
-                SKIN_TEXTURE,
-                (skinTexture: THREE.Texture) => {
-                  console.log("[ModelViewer] Skin texture loaded");
-                  skinTexture.flipY = false; // GLB UVs expect flipY=false
-                  skinTexture.colorSpace = THREE.SRGBColorSpace;
-                  skinTexture.needsUpdate = true;
+              const textureAssets = [
+                { key: "skin", asset: SKIN_TEXTURE },
+                { key: "eye", asset: EYE_TEXTURE },
+                { key: "eyebrow", asset: EYEBROW_TEXTURE },
+                { key: "eyelash", asset: EYELASH_TEXTURE },
+                { key: "teeth", asset: TEETH_TEXTURE },
+              ];
 
-                  model.traverse((child) => {
-                    if (!(child instanceof THREE.Mesh)) return;
-                    const name = child.name.toLowerCase();
+              const textures: Record<string, THREE.Texture> = {};
+              let loaded = 0;
+              const total = textureAssets.length;
 
-                    if (name.includes("human") || name === "") {
-                      child.material = new THREE.MeshPhysicalMaterial({
-                        map: skinTexture,
-                        roughness: 0.6,
-                        metalness: 0.0,
-                        clearcoat: 0.05,
-                        clearcoatRoughness: 0.8,
-                        sheen: 0.3,
-                        sheenRoughness: 0.5,
-                        sheenColor: new THREE.Color(0.9, 0.55, 0.45),
-                      });
-                      child.material.morphTargets = true;
-                    } else if (name.includes("eye") && !name.includes("brow") && !name.includes("lash")) {
-                      child.material = new THREE.MeshPhysicalMaterial({
-                        color: new THREE.Color(0.95, 0.95, 0.95),
-                        roughness: 0.1,
-                        metalness: 0.0,
-                        clearcoat: 0.8,
-                        clearcoatRoughness: 0.1,
-                      });
-                    } else if (name.includes("brow") || name.includes("lash")) {
-                      child.material = new THREE.MeshPhysicalMaterial({
-                        color: new THREE.Color(0.08, 0.05, 0.03),
-                        roughness: 0.8,
-                        metalness: 0.0,
-                        transparent: true,
-                        opacity: 0.9,
-                      });
-                    } else if (name.includes("teeth") || name.includes("tooth")) {
-                      child.material = new THREE.MeshPhysicalMaterial({
-                        color: new THREE.Color(0.9, 0.88, 0.82),
-                        roughness: 0.3,
-                        metalness: 0.0,
-                        clearcoat: 0.4,
-                        clearcoatRoughness: 0.3,
-                      });
-                    }
-                  });
-                },
-                undefined,
-                (err) => {
-                  console.warn("[ModelViewer] Skin texture failed, using flat color:", err);
-                  // Fallback: apply flat color materials
-                  model.traverse((child) => {
-                    if (!(child instanceof THREE.Mesh)) return;
-                    const name = child.name.toLowerCase();
-                    if (name.includes("human") || name === "") {
-                      child.material = new THREE.MeshPhysicalMaterial({
-                        color: new THREE.Color(0.76, 0.57, 0.47),
-                        roughness: 0.6,
-                        metalness: 0.0,
-                      });
-                      child.material.morphTargets = true;
-                    }
-                  });
-                }
-              );
+              const applyMaterials = () => {
+                model.traverse((child) => {
+                  if (!(child instanceof THREE.Mesh)) return;
+                  const name = child.name.toLowerCase();
+                  console.log(`[ModelViewer] Mesh: "${child.name}"`);
+
+                  if (name.includes("base") || name.includes("human") || name === "") {
+                    child.material = new THREE.MeshPhysicalMaterial({
+                      map: textures.skin || null,
+                      roughness: 0.6,
+                      metalness: 0.0,
+                      clearcoat: 0.05,
+                      clearcoatRoughness: 0.8,
+                      sheen: 0.3,
+                      sheenRoughness: 0.5,
+                      sheenColor: new THREE.Color(0.9, 0.55, 0.45),
+                    });
+                    child.material.morphTargets = true;
+                  } else if (name.includes("eye") && !name.includes("brow") && !name.includes("lash")) {
+                    child.material = new THREE.MeshPhysicalMaterial({
+                      map: textures.eye || null,
+                      roughness: 0.1,
+                      metalness: 0.0,
+                      clearcoat: 0.8,
+                      clearcoatRoughness: 0.1,
+                    });
+                  } else if (name.includes("brow")) {
+                    child.material = new THREE.MeshPhysicalMaterial({
+                      map: textures.eyebrow || null,
+                      roughness: 0.8,
+                      metalness: 0.0,
+                      transparent: true,
+                      alphaTest: 0.1,
+                      side: THREE.DoubleSide,
+                    });
+                  } else if (name.includes("lash")) {
+                    child.material = new THREE.MeshPhysicalMaterial({
+                      map: textures.eyelash || null,
+                      roughness: 0.8,
+                      metalness: 0.0,
+                      transparent: true,
+                      alphaTest: 0.1,
+                      side: THREE.DoubleSide,
+                    });
+                  } else if (name.includes("teeth") || name.includes("tooth")) {
+                    child.material = new THREE.MeshPhysicalMaterial({
+                      map: textures.teeth || null,
+                      roughness: 0.3,
+                      metalness: 0.0,
+                      clearcoat: 0.4,
+                      clearcoatRoughness: 0.3,
+                    });
+                  }
+                });
+              };
+
+              const onTextureLoaded = (key: string, tex: THREE.Texture) => {
+                tex.flipY = false;
+                tex.colorSpace = THREE.SRGBColorSpace;
+                tex.needsUpdate = true;
+                textures[key] = tex;
+                loaded++;
+                console.log(`[ModelViewer] Texture "${key}" loaded (${loaded}/${total})`);
+                if (loaded >= total) applyMaterials();
+              };
+
+              const onTextureFailed = (key: string) => {
+                loaded++;
+                console.warn(`[ModelViewer] Texture "${key}" failed (${loaded}/${total})`);
+                if (loaded >= total) applyMaterials();
+              };
+
+              for (const { key, asset } of textureAssets) {
+                texLoader.load(
+                  asset,
+                  (tex: THREE.Texture) => onTextureLoaded(key, tex),
+                  undefined,
+                  () => onTextureFailed(key)
+                );
+              }
 
               scene.add(model);
               modelRef.current = model;
