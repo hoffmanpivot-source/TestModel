@@ -189,3 +189,18 @@ Strip embedded textures from GLB at load time (`stripEmbeddedTextures()`), load 
 - **Changes**: Updated export_makehuman.py with 9 CLOTHING_ASSETS, created ClothingPanel.tsx UI, updated App.tsx with selection state + dynamic asset loading
 - **delete_verts change**: Switched to only use .mhclo-defined delete_verts (not computed from vertex mappings) to support multiple clothing variants sharing one body mesh
 - **Commit**: 34a4f63
+
+---
+
+## 2026-02-26: Camisole puffiness + delete_verts intersection fix
+
+- **Problem**: Camisole looked "like a balloon" / "life vest" — way too puffy and far from body. Also invisible skin at hemline where camisole doesn't extend to pants, and black artifacts around sleeves/neck.
+- **Root cause (puffiness)**: All tops (including thin camisole) got the same 0.020 normal offset designed for thick sweaters
+- **Root cause (invisible skin)**: delete_verts from ALL 9 clothing items' .mhclo files were unioned and baked into the single body mesh. Camisole's 917 delete_verts removed body verts that should be visible when wearing the sweater.
+- **Fix (offset)**: Differentiated thin vs thick tops:
+  - Sweater/jacket: 0.020 (thick outer layer)
+  - Camisole/t-shirt: 0.005 (thin, close to body)
+  - Pants: 0.008, Footwear: 0.010
+- **Fix (delete_verts)**: Changed from union-of-all to INTERSECTION-per-category. Only delete body verts covered by ALL variants in a category. Since sweater has 0 delete_verts, tops intersection = empty. Since wool pants has 0, pants intersection = empty. Only shoes (boots 2206 ∩ flats 1919 ∩ booties 2206 = 1919) contribute delete_verts.
+- **Also fixed**: breast-size morph targets were missing (35 targets vs 38). Re-export restored them.
+- **Commit**: 4bf70be
