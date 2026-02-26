@@ -450,7 +450,7 @@ export function ModelViewer({ modelUri, clothingItems, onModelLoaded, onClothing
 
                 const clothingMeshes: THREE.Mesh[] = [];
 
-                // Apply external texture
+                // Apply external texture and push clothing outward along normals
                 clothingScene.traverse((child) => {
                   if (child instanceof THREE.Mesh) {
                     child.material = new THREE.MeshStandardMaterial({
@@ -458,6 +458,20 @@ export function ModelViewer({ modelUri, clothingItems, onModelLoaded, onClothing
                       roughness: 0.8,
                       metalness: 0.0,
                     });
+
+                    // Push clothing outward along normals to prevent skin poke-through
+                    const geo = child.geometry;
+                    const pos = geo.getAttribute("position");
+                    const norm = geo.getAttribute("normal");
+                    if (pos && norm) {
+                      const offset = 0.008;
+                      for (let i = 0; i < pos.count; i++) {
+                        pos.setX(i, pos.getX(i) + norm.getX(i) * offset);
+                        pos.setY(i, pos.getY(i) + norm.getY(i) * offset);
+                        pos.setZ(i, pos.getZ(i) + norm.getZ(i) * offset);
+                      }
+                      pos.needsUpdate = true;
+                    }
 
                     const hasMorphs = child.morphTargetDictionary && child.morphTargetInfluences;
                     if (hasMorphs) {
