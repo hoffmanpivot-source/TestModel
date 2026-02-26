@@ -632,16 +632,32 @@ def fit_proxy_to_basemesh(asset_obj, basemesh, vertex_mappings, offset_scale=0.1
     return fitted
 
 
-def push_teeth_inward(asset_obj, basemesh, amount=0.002):
-    """Push teeth vertices slightly toward the back of the head to prevent
-    lip clipping. 'amount' is in Blender units (basemesh scale)."""
-    # In Blender/MakeHuman space, -Y is forward (toward face), +Y is backward.
-    # Push teeth in +Y direction (deeper into the mouth).
+def adjust_teeth_position(asset_obj):
+    """Scale and push teeth to prevent lip clipping.
+    The teeth mesh is fitted accurately but extends slightly past the lips.
+    Scale inward and push backward to hide behind lips."""
+    import mathutils
+
     verts = asset_obj.data.vertices
+
+    # Compute centroid of teeth mesh
+    center = mathutils.Vector((0, 0, 0))
     for v in verts:
-        v.co.y += amount
+        center += v.co
+    center /= len(verts)
+
+    # Scale teeth to 92% around centroid (shrink into mouth)
+    scale_factor = 0.92
+    for v in verts:
+        v.co = center + (v.co - center) * scale_factor
+
+    # Also push backward (+Y in Blender = deeper into mouth)
+    push_amount = 0.003
+    for v in verts:
+        v.co.y += push_amount
+
     asset_obj.data.update()
-    print(f"  Teeth: pushed {len(verts)} vertices inward by {amount}")
+    print(f"  Teeth: scaled to {scale_factor*100:.0f}% + pushed {push_amount} inward ({len(verts)} verts)")
 
 
 def load_system_assets(basemesh):
@@ -716,9 +732,9 @@ def load_system_assets(basemesh):
                     print(f"  {name}: cleared custom normals")
                 asset_obj.select_set(False)
 
-                # Push teeth slightly inward to prevent lip clipping
+                # Scale and push teeth to prevent lip clipping
                 if name == "Teeth":
-                    push_teeth_inward(asset_obj, basemesh, amount=0.002)
+                    adjust_teeth_position(asset_obj)
             else:
                 print(f"  {name}: WARNING no vertex mappings found, using raw OBJ positions")
 
