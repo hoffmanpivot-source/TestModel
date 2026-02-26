@@ -632,6 +632,18 @@ def fit_proxy_to_basemesh(asset_obj, basemesh, vertex_mappings, offset_scale=0.1
     return fitted
 
 
+def push_teeth_inward(asset_obj, basemesh, amount=0.002):
+    """Push teeth vertices slightly toward the back of the head to prevent
+    lip clipping. 'amount' is in Blender units (basemesh scale)."""
+    # In Blender/MakeHuman space, -Y is forward (toward face), +Y is backward.
+    # Push teeth in +Y direction (deeper into the mouth).
+    verts = asset_obj.data.vertices
+    for v in verts:
+        v.co.y += amount
+    asset_obj.data.update()
+    print(f"  Teeth: pushed {len(verts)} vertices inward by {amount}")
+
+
 def load_system_assets(basemesh):
     """Load system assets (eyes, eyebrows, eyelashes, teeth) as separate meshes.
 
@@ -693,6 +705,20 @@ def load_system_assets(basemesh):
                 print(f"  {name}: offset_scale={offset_scale:.4f}")
                 fitted = fit_proxy_to_basemesh(asset_obj, basemesh, vertex_mappings, offset_scale)
                 print(f"  {name}: fitted {fitted}/{len(asset_obj.data.vertices)} vertices to basemesh")
+
+                # Recalculate normals after vertex refitting — OBJ normals are
+                # invalid since we replaced all vertex positions
+                bpy.context.view_layer.objects.active = asset_obj
+                asset_obj.select_set(True)
+                # Clear custom normals from OBJ import
+                if asset_obj.data.has_custom_normals:
+                    bpy.ops.mesh.customdata_custom_splitnormals_clear()
+                    print(f"  {name}: cleared custom normals")
+                asset_obj.select_set(False)
+
+                # Push teeth slightly inward to prevent lip clipping
+                if name == "Teeth":
+                    push_teeth_inward(asset_obj, basemesh, amount=0.002)
             else:
                 print(f"  {name}: WARNING no vertex mappings found, using raw OBJ positions")
 
@@ -710,9 +736,11 @@ def load_system_assets(basemesh):
                 if name in ("Eyebrows", "Eyelashes"):
                     mat.node_tree.links.new(tex_node.outputs["Alpha"], bsdf.inputs["Alpha"])
                     if hasattr(mat, 'blend_method'):
-                        mat.blend_method = 'HASHED'
+                        mat.blend_method = 'CLIP'
                     if hasattr(mat, 'shadow_method'):
-                        mat.shadow_method = 'HASHED'
+                        mat.shadow_method = 'CLIP'
+                    if hasattr(mat, 'alpha_threshold'):
+                        mat.alpha_threshold = 0.1
                     mat.use_backface_culling = False
             else:
                 # Fallback colors
@@ -735,6 +763,59 @@ def load_system_assets(basemesh):
             traceback.print_exc()
 
     return loaded
+
+
+def postprocess_glb_alpha(glb_path):
+    """Post-process GLB to change alphaMode from BLEND to MASK for eyebrow/eyelash
+    materials. MASK mode with a low cutoff works more reliably in expo-three than
+    BLEND mode for textures with binary-ish alpha."""
+    import struct
+    import json as json_mod
+
+    with open(glb_path, "rb") as f:
+        data = f.read()
+
+    # Parse GLB header
+    magic, version, length = struct.unpack_from("<III", data, 0)
+    json_len = struct.unpack_from("<I", data, 12)[0]
+    json_type = struct.unpack_from("<I", data, 16)[0]
+    json_bytes = data[20:20 + json_len]
+    gltf = json_mod.loads(json_bytes.decode("utf-8"))
+
+    modified = False
+    for mat in gltf.get("materials", []):
+        if mat.get("alphaMode") == "BLEND":
+            mat["alphaMode"] = "MASK"
+            mat["alphaCutoff"] = 0.1
+            print(f"  Post-process: {mat['name']} -> MASK (cutoff=0.1)")
+            modified = True
+
+    if not modified:
+        print("  Post-process: no BLEND materials to fix")
+        return
+
+    # Rebuild GLB with updated JSON
+    new_json = json_mod.dumps(gltf, separators=(",", ":")).encode("utf-8")
+    # Pad to 4-byte alignment with spaces
+    while len(new_json) % 4 != 0:
+        new_json += b" "
+
+    # Binary chunk starts after header (12) + json chunk header (8) + json data
+    bin_offset = 20 + json_len
+    bin_chunk = data[bin_offset:]
+
+    # Rebuild GLB
+    new_length = 12 + 8 + len(new_json) + len(bin_chunk)
+    header = struct.pack("<III", magic, version, new_length)
+    json_chunk_header = struct.pack("<II", len(new_json), json_type)
+
+    with open(glb_path, "wb") as f:
+        f.write(header)
+        f.write(json_chunk_header)
+        f.write(new_json)
+        f.write(bin_chunk)
+
+    print(f"  Post-process: GLB rewritten ({new_length} bytes)")
 
 
 def main():
@@ -962,6 +1043,11 @@ def main():
         export_morph_tangent=False,
         export_yup=True,
     )
+
+    # STEP 8: Post-process GLB — fix alphaMode for eyebrows/eyelashes
+    # Blender 5.0 always exports BLEND but MASK with cutoff works better
+    # in expo-three/Three.js for binary transparency textures.
+    postprocess_glb_alpha(OUTPUT_PATH)
 
     file_size = os.path.getsize(OUTPUT_PATH)
     print(f"\nExported: {OUTPUT_PATH}")
