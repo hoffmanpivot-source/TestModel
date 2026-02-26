@@ -458,41 +458,61 @@ def _build_adjacency(mesh):
     return adj
 
 
-def _smooth_deltas(clothing_deltas, adjacency, num_verts, iterations=3):
-    """Propagate deltas from affected vertices to unaffected neighbors.
+def _smooth_deltas(clothing_deltas, adjacency, num_verts, iterations=4):
+    """Smooth morph deltas across clothing mesh to prevent tearing.
 
-    At morph boundaries (e.g. knee where upper leg morphs stop), this creates
-    smooth transitions instead of sharp discontinuities that cause tearing.
-    Each iteration, unaffected vertices adopt a fraction of their neighbors' deltas.
+    Two operations per iteration:
+    1. PROPAGATE: unaffected vertices adopt attenuated neighbor deltas
+    2. BOOST: vertices with deltas much smaller than their neighbors get
+       blended toward the neighbor average (fixes knee seam where some
+       vertices have small deltas while neighbors have large ones)
     """
     current = dict(clothing_deltas)
     for it in range(iterations):
-        new_deltas = {}
+        new_deltas = dict(current)
         propagated = 0
+        boosted = 0
         for vi in range(num_verts):
-            if vi in current:
-                new_deltas[vi] = current[vi]
-                continue
             if vi not in adjacency:
                 continue
-            # Check if any neighbors have deltas
+            # Gather neighbor deltas
             neighbor_deltas = []
             for nv in adjacency[vi]:
                 if nv in current:
                     neighbor_deltas.append(current[nv])
             if not neighbor_deltas:
                 continue
-            # Average neighbor deltas, attenuated by 0.5 per iteration
-            attenuation = 0.5 ** (it + 1)
-            avg_dx = sum(d[0] for d in neighbor_deltas) / len(neighbor_deltas) * attenuation
-            avg_dy = sum(d[1] for d in neighbor_deltas) / len(neighbor_deltas) * attenuation
-            avg_dz = sum(d[2] for d in neighbor_deltas) / len(neighbor_deltas) * attenuation
-            mag = (avg_dx ** 2 + avg_dy ** 2 + avg_dz ** 2) ** 0.5
-            if mag > 1e-6:
-                new_deltas[vi] = (avg_dx, avg_dy, avg_dz)
-                propagated += 1
+            # Compute average neighbor delta
+            avg_dx = sum(d[0] for d in neighbor_deltas) / len(neighbor_deltas)
+            avg_dy = sum(d[1] for d in neighbor_deltas) / len(neighbor_deltas)
+            avg_dz = sum(d[2] for d in neighbor_deltas) / len(neighbor_deltas)
+            avg_mag = (avg_dx ** 2 + avg_dy ** 2 + avg_dz ** 2) ** 0.5
+
+            if vi in current:
+                # BOOST: if this vertex's delta is much smaller than neighbors,
+                # blend toward neighbor average to prevent discontinuities
+                cur = current[vi]
+                cur_mag = (cur[0] ** 2 + cur[1] ** 2 + cur[2] ** 2) ** 0.5
+                if avg_mag > 0.002 and cur_mag < avg_mag * 0.4:
+                    blend = 0.4  # blend 40% toward neighbor average
+                    new_deltas[vi] = (
+                        cur[0] + blend * (avg_dx - cur[0]),
+                        cur[1] + blend * (avg_dy - cur[1]),
+                        cur[2] + blend * (avg_dz - cur[2]),
+                    )
+                    boosted += 1
+            else:
+                # PROPAGATE: give this vertex an attenuated neighbor delta
+                attenuation = 0.6 ** (it + 1)
+                new_dx = avg_dx * attenuation
+                new_dy = avg_dy * attenuation
+                new_dz = avg_dz * attenuation
+                mag = (new_dx ** 2 + new_dy ** 2 + new_dz ** 2) ** 0.5
+                if mag > 1e-6:
+                    new_deltas[vi] = (new_dx, new_dy, new_dz)
+                    propagated += 1
         current = new_deltas
-        if propagated == 0:
+        if propagated == 0 and boosted == 0:
             break
     return current
 
@@ -1220,7 +1240,7 @@ def export_clothing_items(basemesh, all_morph_deltas=None):
             mesh_data = asset_obj.data
             name_lower = name.lower()
             if any(kw in name_lower for kw in ("sweater", "shirt", "jacket", "top", "blouse")):
-                offset_amount = 0.012  # outer layer — above pants waistband
+                offset_amount = 0.020  # outer layer — must clear pants waistband at overlap
             elif any(kw in name_lower for kw in ("boot", "shoe")):
                 offset_amount = 0.010  # boots — outside socks/pants cuffs
             else:
