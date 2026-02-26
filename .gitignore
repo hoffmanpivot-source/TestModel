@@ -39,3 +39,8 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Large MakeHuman asset packs (extracted locally, not in git)
+assets/clothing/
+assets/hair/
+assets/skins/

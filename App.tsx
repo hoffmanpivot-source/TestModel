@@ -17,17 +17,22 @@ import { ModelViewer } from "./src/components/ModelViewer";
 import { MorphPanel } from "./src/components/MorphPanel";
 import { useMorphTargets } from "./src/hooks/useMorphTargets";
 
-const APP_VERSION = "0.0.27";
+const APP_VERSION = "0.0.28";
 
 /* eslint-disable @typescript-eslint/no-require-imports */
-// Try sparse format directly (6MB vs 52MB dense)
 const MODEL_ASSET = require("./assets/models/makehuman_base.glb");
+const CLOTHING_ASSETS = [
+  require("./assets/models/clothing/tshirt.glb"),
+  require("./assets/models/clothing/pants.glb"),
+  require("./assets/models/clothing/shoes.glb"),
+];
 
 const DEV_SCREENSHOT_URL = "http://10.1.1.19:8766/screenshot";
 
 export default function App() {
   const [modelError, setModelError] = useState<string | null>(null);
   const [modelUri, setModelUri] = useState<string | null>(null);
+  const [clothingUris, setClothingUris] = useState<string[]>([]);
   const [assetReady, setAssetReady] = useState(false);
   const {
     categories,
@@ -50,6 +55,18 @@ export default function App() {
         if (asset.localUri) {
           setModelUri(asset.localUri);
         }
+
+        // Load clothing assets
+        const clothingLocalUris: string[] = [];
+        for (const clothingModule of CLOTHING_ASSETS) {
+          const clothingAsset = Asset.fromModule(clothingModule);
+          await clothingAsset.downloadAsync();
+          if (clothingAsset.localUri) {
+            clothingLocalUris.push(clothingAsset.localUri);
+            console.log("[App] Clothing asset:", clothingAsset.localUri);
+          }
+        }
+        setClothingUris(clothingLocalUris);
       } catch (err) {
         console.warn("[App] Failed to load model asset:", err);
       }
@@ -180,6 +197,7 @@ export default function App() {
       <View style={styles.viewer}>
         <ModelViewer
           modelUri={modelUri}
+          clothingUris={clothingUris}
           onModelLoaded={handleModelLoaded}
           onError={handleError}
           version={APP_VERSION}

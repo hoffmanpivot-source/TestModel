@@ -503,6 +503,13 @@ SYSTEM_ASSETS = [
     ("Teeth",     "teeth/teeth_base/teeth_base.mhclo"),
 ]
 
+# Clothing assets — paths relative to assets/clothing/ in project root
+CLOTHING_ASSETS = [
+    ("TShirt",     "toigo_basic_tucked_t-shirt/toigo_basic_tucked_t-shirt.mhclo"),
+    ("Pants",      "cortu_cargo_pants/cortu_cargo_pants.mhclo"),
+    ("Shoes",      "shoes02/shoes02.mhclo"),
+]
+
 
 def parse_mhclo(mhclo_path):
     """Parse a .mhclo file and return obj_file, material_file, vertex mappings, and scale ref.
@@ -781,6 +788,121 @@ def load_system_assets(basemesh):
     return loaded
 
 
+def export_clothing_items(basemesh):
+    """Export each clothing item as a separate GLB, fitted to the basemesh.
+
+    Must be called while basemesh still has full vertex set (before helper removal).
+    Each item is loaded, fitted, exported as its own GLB, then removed from scene.
+    """
+    clothing_dir = os.path.join(PROJECT_DIR, "assets", "clothing")
+    output_dir = os.path.join(PROJECT_DIR, "assets", "models", "clothing")
+    os.makedirs(output_dir, exist_ok=True)
+
+    exported = []
+    for name, rel_path in CLOTHING_ASSETS:
+        mhclo_path = os.path.join(clothing_dir, rel_path)
+        if not os.path.exists(mhclo_path):
+            print(f"  MISSING: {mhclo_path}")
+            continue
+
+        obj_file, mat_file, vertex_mappings, scale_ref = parse_mhclo(mhclo_path)
+        if not obj_file or not os.path.exists(obj_file):
+            print(f"  {name}: no obj file found")
+            continue
+
+        # Find texture
+        tex_file = None
+        if mat_file and os.path.exists(mat_file):
+            mat_dir = os.path.dirname(mat_file)
+            with open(mat_file, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("diffuseTexture "):
+                        tex_ref = line.split(None, 1)[1]
+                        tex_file = os.path.join(mat_dir, tex_ref)
+
+        try:
+            # Import OBJ
+            before_objs = set(bpy.data.objects.keys())
+            bpy.ops.wm.obj_import(filepath=obj_file, forward_axis='NEGATIVE_Z', up_axis='Y')
+            after_objs = set(bpy.data.objects.keys())
+            new_objs = after_objs - before_objs
+
+            if not new_objs:
+                print(f"  {name}: OBJ import produced no objects")
+                continue
+
+            asset_obj = bpy.data.objects[list(new_objs)[0]]
+            asset_obj.name = name.lower()
+            asset_obj.location = (0, 0, 0)
+            asset_obj.rotation_euler = (0, 0, 0)
+            asset_obj.scale = (1, 1, 1)
+
+            # Fit to basemesh
+            if vertex_mappings:
+                offset_scale = compute_offset_scale(basemesh, scale_ref)
+                fitted = fit_proxy_to_basemesh(asset_obj, basemesh, vertex_mappings, offset_scale)
+                print(f"  {name}: fitted {fitted}/{len(asset_obj.data.vertices)} vertices")
+
+                # Clear custom normals
+                bpy.context.view_layer.objects.active = asset_obj
+                asset_obj.select_set(True)
+                if asset_obj.data.has_custom_normals:
+                    bpy.ops.mesh.customdata_custom_splitnormals_clear()
+                asset_obj.select_set(False)
+
+            # Create material
+            mat = bpy.data.materials.new(name=f"{name}_mat")
+            mat.use_nodes = True
+            bsdf = mat.node_tree.nodes.get("Principled BSDF")
+
+            if tex_file and os.path.exists(tex_file):
+                tex_node = mat.node_tree.nodes.new("ShaderNodeTexImage")
+                tex_node.image = bpy.data.images.load(tex_file)
+                mat.node_tree.links.new(tex_node.outputs["Color"], bsdf.inputs["Base Color"])
+
+            asset_obj.data.materials.clear()
+            asset_obj.data.materials.append(mat)
+
+            # Smooth shading
+            bpy.context.view_layer.objects.active = asset_obj
+            asset_obj.select_set(True)
+            bpy.ops.object.shade_smooth()
+
+            # Select ONLY this object for export
+            bpy.ops.object.select_all(action='DESELECT')
+            asset_obj.select_set(True)
+
+            # Export as individual GLB
+            out_path = os.path.join(output_dir, f"{name.lower()}.glb")
+            bpy.ops.export_scene.gltf(
+                filepath=out_path,
+                export_format="GLB",
+                use_selection=True,
+                export_apply=False,
+                export_morph=False,
+                export_morph_normal=False,
+                export_morph_tangent=False,
+                export_yup=True,
+            )
+
+            file_size = os.path.getsize(out_path)
+            print(f"  {name}: exported {out_path} ({file_size / 1024:.0f} KB)")
+            exported.append(name)
+
+            # Remove from scene (don't pollute main GLB)
+            bpy.ops.object.select_all(action='DESELECT')
+            asset_obj.select_set(True)
+            bpy.ops.object.delete()
+
+        except Exception as e:
+            print(f"  {name}: FAILED - {e}")
+            import traceback
+            traceback.print_exc()
+
+    return exported
+
+
 def postprocess_glb_alpha(glb_path):
     """Post-process GLB to change alphaMode from BLEND to MASK for eyebrow/eyelash
     materials. MASK mode with a low cutoff works more reliably in expo-three than
@@ -883,6 +1005,12 @@ def main():
     print("\nStep 0b: Loading system assets...")
     system_assets = load_system_assets(basemesh)
     print(f"  Loaded {len(system_assets)} system assets")
+
+    # STEP 0b2: Export clothing items as separate GLBs
+    # Must happen while basemesh still has full vertex set for mhclo fitting
+    print("\nStep 0b2: Exporting clothing items...")
+    clothing_exported = export_clothing_items(basemesh)
+    print(f"  Exported {len(clothing_exported)} clothing items: {', '.join(clothing_exported)}")
 
     # STEP 0c: Remove MPFB2's default shape keys (they have non-zero values
     # that distort the mesh). Must zero all values first, then remove

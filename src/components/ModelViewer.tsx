@@ -23,6 +23,7 @@ const TEETH_TEXTURE = require("../../assets/textures/teeth_diffuse.png");
 
 interface Props {
   modelUri: string | null;
+  clothingUris?: string[];
   onModelLoaded: (scene: THREE.Group) => void;
   onError: (error: string) => void;
   version?: string;
@@ -38,7 +39,7 @@ interface OrbitState {
   targetZ: number;
 }
 
-export function ModelViewer({ modelUri, onModelLoaded, onError, version }: Props) {
+export function ModelViewer({ modelUri, clothingUris, onModelLoaded, onError, version }: Props) {
   const rendererRef = useRef<Renderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
@@ -47,6 +48,8 @@ export function ModelViewer({ modelUri, onModelLoaded, onError, version }: Props
   const glRef = useRef<ExpoWebGLRenderingContext | null>(null);
   const contextReadyRef = useRef(false);
   const loadedUriRef = useRef<string | null>(null);
+  const clothingGroupRef = useRef<THREE.Group | null>(null);
+  const loadedClothingRef = useRef<string[]>([]);
 
   // Camera orbit state
   const orbitRef = useRef<OrbitState>({
@@ -369,6 +372,11 @@ export function ModelViewer({ modelUri, onModelLoaded, onError, version }: Props
               updateCamera();
 
               onModelLoaded(model);
+
+              // Load clothing if URIs provided
+              if (clothingUris && clothingUris.length > 0) {
+                loadClothingGLBs(clothingUris);
+              }
             },
             (err) => {
               console.error("[ModelViewer] GLTF parse error:", err);
@@ -383,6 +391,72 @@ export function ModelViewer({ modelUri, onModelLoaded, onError, version }: Props
     },
     [onModelLoaded, onError, updateCamera]
   );
+
+  // Load clothing GLBs into the model group (same transform)
+  const loadClothingGLBs = useCallback(
+    (uris: string[]) => {
+      const model = modelRef.current;
+      const scene = sceneRef.current;
+      if (!model || !scene) return;
+
+      // Remove old clothing group
+      if (clothingGroupRef.current) {
+        model.remove(clothingGroupRef.current);
+      }
+      const clothingGroup = new THREE.Group();
+      clothingGroup.name = "clothing";
+      model.add(clothingGroup);
+      clothingGroupRef.current = clothingGroup;
+
+      const loader = new GLTFLoader();
+
+      for (const uri of uris) {
+        fetch(uri)
+          .then((res) => res.arrayBuffer())
+          .then((buffer) => {
+            const cleanBuffer = stripEmbeddedTextures(buffer);
+            loader.parse(
+              cleanBuffer,
+              "",
+              (gltf) => {
+                const clothingScene = gltf.scene;
+                // Clothing GLBs are already in the same coordinate space as the base model
+                // (fitted to same basemesh), so no extra transform needed
+                clothingGroup.add(clothingScene);
+                console.log(`[ModelViewer] Clothing loaded: ${uri.split("/").pop()}`);
+
+                // Log mesh names for debugging
+                clothingScene.traverse((child) => {
+                  if (child instanceof THREE.Mesh) {
+                    console.log(`[ModelViewer] Clothing mesh: "${child.name}"`);
+                  }
+                });
+              },
+              (err) => {
+                console.warn(`[ModelViewer] Clothing parse error: ${err}`);
+              }
+            );
+          })
+          .catch((err) => {
+            console.warn(`[ModelViewer] Clothing fetch error: ${err}`);
+          });
+      }
+
+      loadedClothingRef.current = uris;
+    },
+    []
+  );
+
+  // React to clothingUris changes
+  useEffect(() => {
+    if (
+      clothingUris &&
+      modelRef.current &&
+      JSON.stringify(clothingUris) !== JSON.stringify(loadedClothingRef.current)
+    ) {
+      loadClothingGLBs(clothingUris);
+    }
+  }, [clothingUris, loadClothingGLBs]);
 
   const onContextCreate = useCallback(
     (gl: ExpoWebGLRenderingContext) => {
