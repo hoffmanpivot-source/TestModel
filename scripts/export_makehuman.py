@@ -672,9 +672,9 @@ SYSTEM_ASSETS = [
 
 # Clothing assets — paths relative to assets/clothing/ in project root
 CLOTHING_ASSETS = [
-    ("TShirt",     "toigo_basic_tucked_t-shirt/toigo_basic_tucked_t-shirt.mhclo"),
-    ("Pants",      "cortu_cargo_pants/cortu_cargo_pants.mhclo"),
-    ("Shoes",      "shoes02/shoes02.mhclo"),
+    ("Sweater",    "toigo_fisherman_sweater/toigo_fisherman_sweater.mhclo"),
+    ("Pants",      "toigo_wool_pants/toigo_wool_pants.mhclo"),
+    ("Boots",      "toigo_ankle_boots_female/toigo_ankle_boots_female.mhclo"),
 ]
 
 
@@ -1343,10 +1343,9 @@ def main():
     # STEP 0b3: Export clothing items as separate GLBs WITH morph targets
     # Must happen while basemesh still has full vertex set for mhclo fitting
     print("\nStep 0b3: Exporting clothing items with morph targets...")
-    clothing_exported, _clothing_delete_verts = export_clothing_items(basemesh, all_morph_deltas)
+    clothing_exported, clothing_delete_verts = export_clothing_items(basemesh, all_morph_deltas)
     print(f"  Exported {len(clothing_exported)} clothing items: {', '.join(clothing_exported)}")
-    # NOTE: delete_verts disabled — body mesh kept intact, clothing uses offset instead
-    clothing_delete_verts = set()
+    print(f"  Total delete_verts from clothing: {len(clothing_delete_verts)}")
 
     # STEP 0c: Remove MPFB2's default shape keys (they have non-zero values
     # that distort the mesh). Must zero all values first, then remove

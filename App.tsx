@@ -22,9 +22,9 @@ const APP_VERSION = "0.0.32";
 /* eslint-disable @typescript-eslint/no-require-imports */
 const MODEL_ASSET = require("./assets/models/makehuman_base.glb");
 const CLOTHING_ASSETS = [
-  { glb: require("./assets/models/clothing/tshirt.glb"), tex: require("./assets/models/clothing/tshirt_diffuse.png") },
+  { glb: require("./assets/models/clothing/sweater.glb"), tex: require("./assets/models/clothing/sweater_diffuse.png") },
   { glb: require("./assets/models/clothing/pants.glb"), tex: require("./assets/models/clothing/pants_diffuse.png") },
-  { glb: require("./assets/models/clothing/shoes.glb"), tex: require("./assets/models/clothing/shoes_diffuse.png") },
+  { glb: require("./assets/models/clothing/boots.glb"), tex: require("./assets/models/clothing/boots_diffuse.png") },
 ];
 
 const DEV_SCREENSHOT_URL = "http://10.1.1.19:8766/screenshot";
