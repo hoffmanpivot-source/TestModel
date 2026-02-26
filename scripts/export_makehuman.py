@@ -1170,28 +1170,33 @@ def export_clothing_items(basemesh, all_morph_deltas=None):
             continue
 
         # Collect delete_verts for body masking.
-        # If .mhclo defines delete_verts, use those. Otherwise, compute them
-        # from vertex mappings — all body vertices referenced by the clothing's
-        # barycentric mappings are "under" the clothing and can be hidden.
-        # This prevents body poke-through at morph transition zones (e.g. knee).
+        # If .mhclo defines delete_verts, use those. Otherwise, for LOWER-BODY
+        # clothing only, compute from vertex mappings — body vertices referenced
+        # by the clothing's barycentric mappings are "under" the clothing.
+        # Upper-body clothing (sweaters, shirts) must NOT delete body verts
+        # because the neck/décolletage area would become invisible.
         if delete_verts:
             all_delete_verts.update(delete_verts)
             print(f"  {name}: {len(delete_verts)} delete_verts from .mhclo")
         elif vertex_mappings:
-            # Compute delete_verts from vertex mappings
-            computed_dv = set()
-            for mapping in vertex_mappings:
-                if len(mapping) == 1:
-                    computed_dv.add(int(mapping[0]))
-                elif len(mapping) == 9:
-                    v1, v2, v3 = int(mapping[0]), int(mapping[1]), int(mapping[2])
-                    computed_dv.add(v1)
-                    computed_dv.add(v2)
-                    computed_dv.add(v3)
-            # Only include body vertices (indices < 13380), not helper vertices
-            computed_dv = {v for v in computed_dv if v < 13380}
-            all_delete_verts.update(computed_dv)
-            print(f"  {name}: {len(computed_dv)} delete_verts computed from vertex mappings")
+            is_lower_body = any(kw in name.lower() for kw in
+                ("pant", "trouser", "jean", "skirt", "short", "boot", "shoe", "sock"))
+            if is_lower_body:
+                computed_dv = set()
+                for mapping in vertex_mappings:
+                    if len(mapping) == 1:
+                        computed_dv.add(int(mapping[0]))
+                    elif len(mapping) == 9:
+                        v1, v2, v3 = int(mapping[0]), int(mapping[1]), int(mapping[2])
+                        computed_dv.add(v1)
+                        computed_dv.add(v2)
+                        computed_dv.add(v3)
+                # Only include body vertices (indices < 13380), not helper vertices
+                computed_dv = {v for v in computed_dv if v < 13380}
+                all_delete_verts.update(computed_dv)
+                print(f"  {name}: {len(computed_dv)} delete_verts computed from mappings")
+            else:
+                print(f"  {name}: skipping delete_verts (upper-body)")
 
         # Find texture
         tex_file = None
