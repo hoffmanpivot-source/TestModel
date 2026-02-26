@@ -1,6 +1,3 @@
-// Must be imported BEFORE any Three.js imports — patches Blob/URL for React Native
-import "./src/utils/blobPolyfill";
-
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
