@@ -11,7 +11,11 @@ import { GLView, ExpoWebGLRenderingContext } from "expo-gl";
 import { Renderer } from "expo-three";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { TextureLoader as ExpoTextureLoader } from "expo-three";
 import { stripEmbeddedTextures } from "../utils/glbPreprocess";
+
+/* eslint-disable @typescript-eslint/no-require-imports */
+const SKIN_TEXTURE = require("../../assets/textures/skin_diffuse.png");
 
 interface Props {
   modelUri: string | null;
@@ -256,54 +260,77 @@ export function ModelViewer({ modelUri, onModelLoaded, onError, version }: Props
               });
               console.log("[ModelViewer] Total morph targets:", morphCount);
 
-              // Apply realistic materials
-              model.traverse((child) => {
-                if (!(child instanceof THREE.Mesh)) return;
-                const name = child.name.toLowerCase();
+              // Load skin texture and apply materials
+              const texLoader = new ExpoTextureLoader();
+              texLoader.load(
+                SKIN_TEXTURE,
+                (skinTexture: THREE.Texture) => {
+                  console.log("[ModelViewer] Skin texture loaded");
+                  skinTexture.flipY = false; // GLB UVs expect flipY=false
+                  skinTexture.colorSpace = THREE.SRGBColorSpace;
+                  skinTexture.needsUpdate = true;
 
-                if (name.includes("human") || name === "") {
-                  // Body/skin material
-                  child.material = new THREE.MeshPhysicalMaterial({
-                    color: new THREE.Color(0.76, 0.57, 0.47), // warm skin tone
-                    roughness: 0.6,
-                    metalness: 0.0,
-                    clearcoat: 0.05,
-                    clearcoatRoughness: 0.8,
-                    sheen: 0.3,
-                    sheenRoughness: 0.5,
-                    sheenColor: new THREE.Color(0.9, 0.55, 0.45),
+                  model.traverse((child) => {
+                    if (!(child instanceof THREE.Mesh)) return;
+                    const name = child.name.toLowerCase();
+
+                    if (name.includes("human") || name === "") {
+                      child.material = new THREE.MeshPhysicalMaterial({
+                        map: skinTexture,
+                        roughness: 0.6,
+                        metalness: 0.0,
+                        clearcoat: 0.05,
+                        clearcoatRoughness: 0.8,
+                        sheen: 0.3,
+                        sheenRoughness: 0.5,
+                        sheenColor: new THREE.Color(0.9, 0.55, 0.45),
+                      });
+                      child.material.morphTargets = true;
+                    } else if (name.includes("eye") && !name.includes("brow") && !name.includes("lash")) {
+                      child.material = new THREE.MeshPhysicalMaterial({
+                        color: new THREE.Color(0.95, 0.95, 0.95),
+                        roughness: 0.1,
+                        metalness: 0.0,
+                        clearcoat: 0.8,
+                        clearcoatRoughness: 0.1,
+                      });
+                    } else if (name.includes("brow") || name.includes("lash")) {
+                      child.material = new THREE.MeshPhysicalMaterial({
+                        color: new THREE.Color(0.08, 0.05, 0.03),
+                        roughness: 0.8,
+                        metalness: 0.0,
+                        transparent: true,
+                        opacity: 0.9,
+                      });
+                    } else if (name.includes("teeth") || name.includes("tooth")) {
+                      child.material = new THREE.MeshPhysicalMaterial({
+                        color: new THREE.Color(0.9, 0.88, 0.82),
+                        roughness: 0.3,
+                        metalness: 0.0,
+                        clearcoat: 0.4,
+                        clearcoatRoughness: 0.3,
+                      });
+                    }
                   });
-                  // Preserve morph targets
-                  child.material.morphTargets = true;
-                } else if (name.includes("eye") && !name.includes("brow") && !name.includes("lash")) {
-                  // Eye material — white sclera with slight gloss
-                  child.material = new THREE.MeshPhysicalMaterial({
-                    color: new THREE.Color(0.95, 0.95, 0.95),
-                    roughness: 0.1,
-                    metalness: 0.0,
-                    clearcoat: 0.8,
-                    clearcoatRoughness: 0.1,
-                  });
-                } else if (name.includes("brow") || name.includes("lash")) {
-                  // Eyebrow/eyelash material — dark, slightly transparent
-                  child.material = new THREE.MeshPhysicalMaterial({
-                    color: new THREE.Color(0.08, 0.05, 0.03),
-                    roughness: 0.8,
-                    metalness: 0.0,
-                    transparent: true,
-                    opacity: 0.9,
-                  });
-                } else if (name.includes("teeth") || name.includes("tooth")) {
-                  // Teeth material — off-white, slightly glossy
-                  child.material = new THREE.MeshPhysicalMaterial({
-                    color: new THREE.Color(0.9, 0.88, 0.82),
-                    roughness: 0.3,
-                    metalness: 0.0,
-                    clearcoat: 0.4,
-                    clearcoatRoughness: 0.3,
+                },
+                undefined,
+                (err) => {
+                  console.warn("[ModelViewer] Skin texture failed, using flat color:", err);
+                  // Fallback: apply flat color materials
+                  model.traverse((child) => {
+                    if (!(child instanceof THREE.Mesh)) return;
+                    const name = child.name.toLowerCase();
+                    if (name.includes("human") || name === "") {
+                      child.material = new THREE.MeshPhysicalMaterial({
+                        color: new THREE.Color(0.76, 0.57, 0.47),
+                        roughness: 0.6,
+                        metalness: 0.0,
+                      });
+                      child.material.morphTargets = true;
+                    }
                   });
                 }
-              });
+              );
 
               scene.add(model);
               modelRef.current = model;
