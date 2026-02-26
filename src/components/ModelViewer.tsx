@@ -225,6 +225,10 @@ export function ModelViewer({ modelUri, clothingItems, onModelLoaded, onClothing
                   }
                 }
               });
+              // Ensure bbox extends to ground level — foot vertices may be
+              // deleted from body mesh (under boots), but model still extends to Y≈0
+              box.expandByPoint(new THREE.Vector3(0, 0, 0));
+
               const center = box.getCenter(new THREE.Vector3());
               const size = box.getSize(new THREE.Vector3());
               const maxDim = Math.max(size.x, size.y, size.z);
@@ -374,6 +378,9 @@ export function ModelViewer({ modelUri, clothingItems, onModelLoaded, onClothing
               scene.add(model);
               modelRef.current = model;
 
+              console.log(`[ModelViewer] Model transform: pos(${model.position.x.toFixed(4)},${model.position.y.toFixed(4)},${model.position.z.toFixed(4)}) scale(${model.scale.x.toFixed(4)})`);
+              console.log(`[ModelViewer] Body bbox: min(${box.min.x.toFixed(4)},${box.min.y.toFixed(4)},${box.min.z.toFixed(4)}) max(${box.max.x.toFixed(4)},${box.max.y.toFixed(4)},${box.max.z.toFixed(4)})`);
+
               // Set orbit to frame the model
               const modelHeight = size.y * scale;
               orbitRef.current.targetY = modelHeight * 0.5;
@@ -478,7 +485,17 @@ export function ModelViewer({ modelUri, clothingItems, onModelLoaded, onClothing
                       clothingMeshes.push(child);
                     }
 
-                    console.log(`[ModelViewer] Clothing mesh: "${child.name}" (tex: ${tex ? "yes" : "no"}, morphs: ${hasMorphs ? Object.keys(child.morphTargetDictionary!).length : 0})`);
+                    // Debug: log mesh bounding box
+                    const bbox = new THREE.Box3().setFromBufferAttribute(pos);
+                    console.log(`[ModelViewer] Clothing mesh: "${child.name}" (tex: ${tex ? "yes" : "no"}, morphs: ${hasMorphs ? Object.keys(child.morphTargetDictionary!).length : 0}) bbox: min(${bbox.min.x.toFixed(3)},${bbox.min.y.toFixed(3)},${bbox.min.z.toFixed(3)}) max(${bbox.max.x.toFixed(3)},${bbox.max.y.toFixed(3)},${bbox.max.z.toFixed(3)})`);
+                  }
+                });
+
+                // Debug: log scene transforms
+                console.log(`[ModelViewer] clothingScene position: (${clothingScene.position.x.toFixed(3)},${clothingScene.position.y.toFixed(3)},${clothingScene.position.z.toFixed(3)}) scale: (${clothingScene.scale.x.toFixed(3)},${clothingScene.scale.y.toFixed(3)},${clothingScene.scale.z.toFixed(3)})`);
+                clothingScene.traverse((c) => {
+                  if (c !== clothingScene) {
+                    console.log(`[ModelViewer] child "${c.name}" pos: (${c.position.x.toFixed(3)},${c.position.y.toFixed(3)},${c.position.z.toFixed(3)}) scale: (${c.scale.x.toFixed(3)},${c.scale.y.toFixed(3)},${c.scale.z.toFixed(3)})`);
                   }
                 });
 
