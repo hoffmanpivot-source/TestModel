@@ -204,3 +204,12 @@ Strip embedded textures from GLB at load time (`stripEmbeddedTextures()`), load 
 - **Fix (delete_verts)**: Changed from union-of-all to INTERSECTION-per-category. Only delete body verts covered by ALL variants in a category. Since sweater has 0 delete_verts, tops intersection = empty. Since wool pants has 0, pants intersection = empty. Only shoes (boots 2206 ∩ flats 1919 ∩ booties 2206 = 1919) contribute delete_verts.
 - **Also fixed**: breast-size morph targets were missing (35 targets vs 38). Re-export restored them.
 - **Commit**: 4bf70be
+
+---
+
+## 2026-02-26: Mesh accumulation bug on clothing swap
+
+- **Problem**: After switching clothes several times, meshCount grew from 9 to 19+, causing severe tearing and visual corruption. Old clothing meshes were removed from the 3D scene but still registered in the morph system.
+- **Root cause**: `addMeshes()` in `useMorphTargets.ts` appended new clothing meshes to `meshesRef.current` without removing old ones. The 3D scene correctly removed old clothing (via `model.remove(clothingGroup)`), but `meshesRef.current` still held references to the orphaned meshes. Morph updates were applied to both live and stale meshes.
+- **Fix**: Before adding new meshes, filter `meshesRef.current` to only keep meshes with `parent !== null` (still attached to the scene graph). Orphaned meshes get pruned automatically.
+- **Commit**: 70ad1b0
