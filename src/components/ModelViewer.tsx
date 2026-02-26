@@ -11,6 +11,7 @@ import { GLView, ExpoWebGLRenderingContext } from "expo-gl";
 import { Renderer } from "expo-three";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { stripEmbeddedTextures } from "../utils/glbPreprocess";
 
 interface Props {
   modelUri: string | null;
@@ -170,8 +171,11 @@ export function ModelViewer({ modelUri, onModelLoaded, onError, version }: Props
             buffer.byteLength
           );
 
+          // Strip embedded textures (RN Blob doesn't support ArrayBuffer)
+          const cleanBuffer = stripEmbeddedTextures(buffer);
+
           loader.parse(
-            buffer,
+            cleanBuffer,
             "",
             (gltf) => {
               console.log("[ModelViewer] GLTF parsed successfully");
