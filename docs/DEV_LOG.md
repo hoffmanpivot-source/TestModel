@@ -222,3 +222,10 @@ Strip embedded textures from GLB at load time (`stripEmbeddedTextures()`), load 
 - **Root cause**: Stale closure. `syncMorphState` is a `useCallback` with `[morphState]` dependency. When `loadClothingGLBs` starts async GLB loading, it captures the current `onClothingMeshesLoaded` callback. By the time loading completes, morphState may have changed, but the captured `syncMorphState` still has the old values. The `addMeshes` function also had `[]` deps and just zeroed out new meshes.
 - **Fix**: Added `morphStateRef` (always current via `morphStateRef.current = morphState`). `addMeshes` now reads the latest morph state from the ref and applies it directly to new meshes, bypassing the stale closure issue entirely.
 - **Commit**: c226cfa
+
+---
+
+## 2026-02-26: Replace camisole with tube top for breast exposure testing
+
+- **What**: Replaced camisole clothing item with tube top (skalldyrssuppe_tube_top_funky_colors) because camisole wasn't low-cut enough to test partially exposed breasts with morph targets. Tube top has 1456 vertices, 21 morph targets transferred, 0.005 thin top offset. Updated export_makehuman.py CLOTHING_CATEGORIES (Camisole → TubeTop), App.tsx references (camisole → tubetop), removed old camisole.glb and camisole_diffuse.png, re-exported all 9 clothing items + body mesh. Version 0.0.35.
+- **Commit**: b5bbd7e
