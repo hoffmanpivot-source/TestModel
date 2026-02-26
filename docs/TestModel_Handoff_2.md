@@ -1,9 +1,9 @@
 # TestModel Handoff — Session 2
 
 ## Where We Are
-- **Latest commit**: 3b7061b
+- **Latest commit**: 5bb1e0e
 - **App**: React Native + Expo + Three.js MakeHuman character viewer with morph target sliders
-- **Current work**: Clothing morph target transfer to fix skin poke-through
+- **Current work**: Clothing poke-through fixes — new clothing set, delete_verts, morph delta investigation
 
 ## What Was Done This Session
 Implemented morph target transfer from body mesh to clothing meshes via barycentric interpolation:
@@ -29,25 +29,25 @@ Several issues found and fixed during testing:
 - Shoes export crash when no morphs pass filter — deferred Basis shape key creation
 - Added max_delta < 0.001 threshold to skip negligible morphs per clothing item
 
-**Current status**: Restored 0.008 normal offset push in ModelViewer.tsx clothing mesh traversal. Clothing now has BOTH offset (prevents z-fighting at rest) AND morph targets (handles deformation). Testing this combined approach.
+**Current status**: Switched to new clothing set for better coverage — fisherman sweater (31 morphs), wool pants (15 morphs), ankle boots (0 morphs). Enabled delete_verts for boots (hides 2206 foot vertices). Runtime 0.008 normal offset push restored. Old clothing (tucked t-shirt, cargo pants, shoes02) had midriff coverage gaps.
 
 **CAUTION**: User is frustrated about regressions — be very careful about removing working code. The offset removal was a regression; offset and morphs serve different purposes and both are needed.
 
 **Next steps**:
-1. Visual QA — verify clothing sits correctly at default morphs AND deforms properly with sliders
-2. Edge cases — test extreme morph values (breast-size=1.0, weight=1.0)
-3. Fine-tune spatial filtering ranges if other morphs show similar cross-contamination
+1. Fix morph delta magnitude mismatch — clothing deltas from raw .target files are too small vs subdivided body deltas
+2. Visual QA with new clothing set at extreme morph values
+3. Consider whether more clothing items need delete_verts sections
 ## What Works
 - 38 morph targets on body mesh
 - System assets (eyes, eyebrows, eyelashes, teeth)
-- Clothing loading (t-shirt, pants, shoes)
+- Clothing loading (fisherman sweater, wool pants, ankle boots)
 - Shoes properly fitted (parser fix from session 1)
 - Morph sliders with collapsible categories
 
 ## Known Issues
-- Morph transfer not yet visually verified — may need delta scaling adjustments
+- **Morph delta magnitude mismatch**: Clothing morph deltas (from raw .target files) are too small compared to subdivided body morph deltas — skin still pokes through at non-trivial morph values
+- Ankle boots have 0 morph targets (rely on delete_verts body masking only)
 - Blender export offset (0.005) still applied in addition to runtime offset (0.008) and morph targets
-- Slight skin at midriff between shirt and pants at default morphs
 - **Regression risk**: Do not remove runtime offset — it serves a different purpose than morph targets
 
 ## Key Files

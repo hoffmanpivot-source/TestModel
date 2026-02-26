@@ -4,6 +4,19 @@ Persistent log of problems, fixes, and failed attempts. Never delete entries.
 
 ---
 
+## 2026-02-26: Clothing poke-through investigation and fixes
+- **Problem**: With morphs applied (breast-size, hips), skin pokes through clothing. Feet show through shoes, socks through pants. Clothing morph deltas too small compared to subdivided body.
+- **Root cause (partial)**: Clothing morph deltas are computed from raw .target files (pre-subdivision) while body uses subdivided morph deltas that can be larger. Also, most MakeHuman clothing .mhclo files don't include delete_verts sections to hide body under clothing.
+- **Changes made**:
+  - Restored runtime 0.008 normal offset push (was incorrectly removed)
+  - Enabled delete_verts body masking (boots hide 2206 foot vertices)
+  - Switched clothing to fisherman sweater (31 morphs), wool pants (15 morphs), ankle boots (0 morphs) for better coverage
+  - Old clothing (tucked t-shirt, cargo pants, shoes02) had coverage gaps at midriff
+- **Still investigating**: Morph delta magnitude mismatch between clothing and subdivided body
+- **Commit**: 5bb1e0e
+
+---
+
 ## 2026-02-26: Clothing not positioned correctly at default morph values
 - **Problem**: After adding morph target transfer to clothing, clothes clipped through body even before any sliders were moved
 - **Root cause**: Runtime normal offset push (0.008) was incorrectly removed from ModelViewer.tsx when adding morph target support. The offset and morphs serve different purposes — offset prevents z-fighting at rest, morphs handle deformation
