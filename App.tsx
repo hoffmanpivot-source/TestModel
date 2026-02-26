@@ -18,7 +18,7 @@ import { MorphPanel } from "./src/components/MorphPanel";
 import { ClothingPanel } from "./src/components/ClothingPanel";
 import { useMorphTargets } from "./src/hooks/useMorphTargets";
 
-const APP_VERSION = "0.0.35";
+const APP_VERSION = "0.0.36";
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const MODEL_ASSET = require("./assets/models/makehuman_base.glb");
@@ -33,7 +33,7 @@ interface ClothingVariant {
 const ALL_CLOTHING = {
   tops: [
     { id: "sweater", label: "Sweater", glb: require("./assets/models/clothing/sweater.glb"), tex: require("./assets/models/clothing/sweater_diffuse.png") },
-    { id: "tubetop", label: "Tube Top", glb: require("./assets/models/clothing/tubetop.glb"), tex: require("./assets/models/clothing/tubetop_diffuse.png") },
+    { id: "keyholetank", label: "Keyhole Tank", glb: require("./assets/models/clothing/keyholetank.glb"), tex: require("./assets/models/clothing/keyholetank_diffuse.png") },
     { id: "tshirt", label: "T-Shirt", glb: require("./assets/models/clothing/tshirt.glb"), tex: require("./assets/models/clothing/tshirt_diffuse.png") },
   ] as ClothingVariant[],
   pants: [
