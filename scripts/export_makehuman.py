@@ -444,28 +444,51 @@ def collect_all_morph_deltas(target_dir, breast_deltas):
     return all_deltas
 
 
-def transfer_morphs_to_clothing(asset_obj, vertex_mappings, all_morph_deltas):
+def transfer_morphs_to_clothing(asset_obj, vertex_mappings, all_morph_deltas, basemesh):
     """Create shape keys on a clothing mesh by interpolating body morph deltas
     through the .mhclo barycentric vertex mappings.
 
     For each body morph target, each clothing vertex's delta is computed as:
       clothing_delta = w1*body_delta(v1) + w2*body_delta(v2) + w3*body_delta(v3)
+
+    Two fixes for tracking accuracy:
+    1. All deltas scaled by DELTA_SCALE (1.15) to compensate for interpolation smoothing
+       at morph boundaries where reference vertices straddle affected/unaffected areas.
+    2. KD-tree spatial fallback: for clothing vertices where barycentric interpolation
+       gives near-zero delta but nearby body vertices ARE affected, use the nearest
+       affected body vertex's delta. Fixes e.g. pants behind knee with leg morphs.
     """
+    from mathutils.kdtree import KDTree
+
     mesh = asset_obj.data
     num_proxy_verts = len(mesh.vertices)
 
+    DELTA_SCALE = 1.15  # Compensate for barycentric smoothing at morph boundaries
+    FALLBACK_RADIUS = 0.05  # Max distance for spatial fallback (model scale ~0.1)
+
+    # Build KD-tree from basemesh for spatial fallback lookups
+    body_verts = basemesh.data.vertices
+    kd = KDTree(len(body_verts))
+    for vi, v in enumerate(body_verts):
+        kd.insert(v.co, vi)
+    kd.balance()
+
     # Don't add Basis key yet — only add if we actually create morph targets
     created = 0
+    fallback_used_total = 0
     for sk_name, body_deltas in all_morph_deltas.items():
         # Compute clothing deltas from body deltas via barycentric interpolation
         clothing_deltas = {}
+        fallback_used = 0
         for i in range(min(len(vertex_mappings), num_proxy_verts)):
             mapping = vertex_mappings[i]
+            dx, dy, dz = 0.0, 0.0, 0.0
+
             if len(mapping) == 1:
                 # Simple 1:1 mapping — copy body delta directly
                 base_idx = mapping[0]
                 if base_idx in body_deltas:
-                    clothing_deltas[i] = body_deltas[base_idx]
+                    dx, dy, dz = body_deltas[base_idx]
             elif len(mapping) == 9:
                 # Barycentric: interpolate body deltas with weights
                 v1, v2, v3, w1, w2, w3, _ox, _oy, _oz = mapping
@@ -476,8 +499,38 @@ def transfer_morphs_to_clothing(asset_obj, vertex_mappings, all_morph_deltas):
                 dx = w1 * d1[0] + w2 * d2[0] + w3 * d3[0]
                 dy = w1 * d1[1] + w2 * d2[1] + w3 * d3[1]
                 dz = w1 * d1[2] + w2 * d2[2] + w3 * d3[2]
-                if abs(dx) > 1e-7 or abs(dy) > 1e-7 or abs(dz) > 1e-7:
-                    clothing_deltas[i] = (dx, dy, dz)
+
+            interp_mag = (dx * dx + dy * dy + dz * dz) ** 0.5
+
+            # Spatial fallback: if barycentric delta is tiny, check nearest body vertices
+            if interp_mag < 0.0005:
+                clothing_pos = mesh.vertices[i].co
+                nearest = kd.find_n(clothing_pos, 8)
+                best_delta = None
+                best_mag = 0
+                total_weight = 0
+                weighted_dx, weighted_dy, weighted_dz = 0, 0, 0
+                for (co, idx, dist) in nearest:
+                    if dist > FALLBACK_RADIUS:
+                        continue
+                    if idx in body_deltas:
+                        bd = body_deltas[idx]
+                        bd_mag = (bd[0] ** 2 + bd[1] ** 2 + bd[2] ** 2) ** 0.5
+                        if bd_mag > 0.001:
+                            w = 1.0 / max(dist, 0.0001)
+                            weighted_dx += bd[0] * w
+                            weighted_dy += bd[1] * w
+                            weighted_dz += bd[2] * w
+                            total_weight += w
+                if total_weight > 0:
+                    dx = weighted_dx / total_weight
+                    dy = weighted_dy / total_weight
+                    dz = weighted_dz / total_weight
+                    fallback_used += 1
+
+            if abs(dx) > 1e-7 or abs(dy) > 1e-7 or abs(dz) > 1e-7:
+                # Scale up to compensate for interpolation smoothing
+                clothing_deltas[i] = (dx * DELTA_SCALE, dy * DELTA_SCALE, dz * DELTA_SCALE)
 
         if not clothing_deltas:
             continue
@@ -485,8 +538,8 @@ def transfer_morphs_to_clothing(asset_obj, vertex_mappings, all_morph_deltas):
         # Filter out morphs with negligible max displacement on this clothing item.
         # Prevents e.g. shoes getting breast morphs from tiny foot-area deltas.
         max_mag = 0
-        for dx, dy, dz in clothing_deltas.values():
-            mag = (dx * dx + dy * dy + dz * dz) ** 0.5
+        for ddx, ddy, ddz in clothing_deltas.values():
+            mag = (ddx * ddx + ddy * ddy + ddz * ddz) ** 0.5
             if mag > max_mag:
                 max_mag = mag
         if max_mag < 0.001:
@@ -497,15 +550,19 @@ def transfer_morphs_to_clothing(asset_obj, vertex_mappings, all_morph_deltas):
             asset_obj.shape_key_add(name="Basis", from_mix=False)
 
         sk = asset_obj.shape_key_add(name=sk_name, from_mix=False)
-        for idx, (dx, dy, dz) in clothing_deltas.items():
+        for idx, (ddx, ddy, ddz) in clothing_deltas.items():
             base = mesh.vertices[idx].co
-            sk.data[idx].co.x = base.x + dx
-            sk.data[idx].co.y = base.y + dy
-            sk.data[idx].co.z = base.z + dz
+            sk.data[idx].co.x = base.x + ddx
+            sk.data[idx].co.y = base.y + ddy
+            sk.data[idx].co.z = base.z + ddz
         sk.value = 0.0
         created += 1
-        print(f"    {sk_name}: {len(clothing_deltas)} verts, max_delta={max_mag:.6f}")
+        fallback_used_total += fallback_used
+        fb_str = f" ({fallback_used} spatial fallback)" if fallback_used > 0 else ""
+        print(f"    {sk_name}: {len(clothing_deltas)} verts, max_delta={max_mag:.6f}{fb_str}")
 
+    if fallback_used_total > 0:
+        print(f"    Total spatial fallback vertices: {fallback_used_total}")
     return created
 
 
@@ -1090,7 +1147,7 @@ def export_clothing_items(basemesh, all_morph_deltas=None):
             # Push clothing vertices outward along normals to prevent skin poke-through
             import mathutils
             mesh_data = asset_obj.data
-            offset_amount = 0.005  # outward push to clear subdivided body surface
+            offset_amount = 0.008  # outward push to clear subdivided body surface
             for v in mesh_data.vertices:
                 n = v.normal
                 if n.length > 0.001:
@@ -1101,7 +1158,7 @@ def export_clothing_items(basemesh, all_morph_deltas=None):
             # Transfer morph targets from body to clothing via barycentric interpolation
             has_morphs = False
             if all_morph_deltas and vertex_mappings:
-                morph_count = transfer_morphs_to_clothing(asset_obj, vertex_mappings, all_morph_deltas)
+                morph_count = transfer_morphs_to_clothing(asset_obj, vertex_mappings, all_morph_deltas, basemesh)
                 has_morphs = morph_count > 0
                 print(f"  {name}: transferred {morph_count} morph targets to clothing")
 
