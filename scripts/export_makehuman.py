@@ -540,6 +540,7 @@ def transfer_morphs_to_clothing(asset_obj, vertex_mappings, all_morph_deltas, ba
 
     DELTA_SCALE = 1.3   # Compensate for barycentric smoothing at morph boundaries
     FALLBACK_RADIUS = 0.1  # Max distance for spatial fallback (model scale ~0.1)
+    MAX_DELTA_MAG = 0.5   # Cap individual vertex deltas — prevents garbage from depsgraph captures
 
     # Build KD-tree from basemesh for spatial fallback lookups
     body_verts = basemesh.data.vertices
@@ -607,7 +608,15 @@ def transfer_morphs_to_clothing(asset_obj, vertex_mappings, all_morph_deltas, ba
 
             if abs(dx) > 1e-7 or abs(dy) > 1e-7 or abs(dz) > 1e-7:
                 # Scale up to compensate for interpolation smoothing
-                clothing_deltas[i] = (dx * DELTA_SCALE, dy * DELTA_SCALE, dz * DELTA_SCALE)
+                sdx, sdy, sdz = dx * DELTA_SCALE, dy * DELTA_SCALE, dz * DELTA_SCALE
+                # Cap to prevent garbage from depsgraph composite captures
+                smag = (sdx * sdx + sdy * sdy + sdz * sdz) ** 0.5
+                if smag > MAX_DELTA_MAG:
+                    scale_down = MAX_DELTA_MAG / smag
+                    sdx *= scale_down
+                    sdy *= scale_down
+                    sdz *= scale_down
+                clothing_deltas[i] = (sdx, sdy, sdz)
 
         if not clothing_deltas:
             continue
@@ -656,16 +665,15 @@ def transfer_morphs_to_clothing(asset_obj, vertex_mappings, all_morph_deltas, ba
 
 
 def capture_breast_deltas_from_mpfb2(basemesh):
-    """Capture breast morph deltas from MPFB2's own parametric shape keys via depsgraph.
+    """Capture breast morph deltas from MPFB2's shape keys by reading vertex data directly.
 
-    Instead of loading raw .target files and guessing at scale factors, this captures
-    the EXACT vertex positions that MPFB2's parametric system computes. This produces
-    natural-looking breast shapes because it uses MakeHuman's proper blending.
+    Instead of using the depsgraph (which is non-deterministic and often returns garbage),
+    this reads shape key vertex positions directly from shape_key.data[i].co and computes
+    deltas against the Basis key. This is 100% deterministic and reliable.
 
     Must be called BEFORE removing MPFB2's default shape keys.
     Returns dict of {morph_name: {vertex_index: (dx, dy, dz)}} on the ORIGINAL mesh.
     """
-    import numpy as np
 
     if not basemesh.data.shape_keys:
         print("  WARNING: No shape keys found for breast capture")
@@ -674,9 +682,10 @@ def capture_breast_deltas_from_mpfb2(basemesh):
     keys = basemesh.data.shape_keys.key_blocks
     num_verts = len(basemesh.data.vertices)
 
+    # First key is always Basis
+    basis_key = keys[0]
+
     # Find cup and firmness shape keys by pattern matching
-    # MPFB2 creates: $md-$fe-$yn-$av$mu-$av$wg-maxcup-$av$fi (cup size)
-    #                $md-$fe-$yn-$av$mu-$av$wg-$avcup-max$fi (firmness)
     cup_key = None
     firm_key = None
     for sk in keys:
@@ -686,66 +695,45 @@ def capture_breast_deltas_from_mpfb2(basemesh):
         if "max$fi" in name or "maxfirmness" in name:
             firm_key = sk
 
-    print(f"  Cup key: {cup_key.name} (default={cup_key.value:.4f})" if cup_key else "  Cup key: NOT FOUND")
-    print(f"  Firm key: {firm_key.name} (default={firm_key.value:.4f})" if firm_key else "  Firm key: NOT FOUND")
+    print(f"  Basis key: {basis_key.name}")
+    print(f"  Cup key: {cup_key.name}" if cup_key else "  Cup key: NOT FOUND")
+    print(f"  Firm key: {firm_key.name}" if firm_key else "  Firm key: NOT FOUND")
 
     if not cup_key:
         print("  WARNING: Cannot find cupsize shape key, falling back to target files")
         return {}
 
-    # Save default values for all shape keys
-    default_values = {sk.name: sk.value for sk in keys}
-
-    # Capture base positions (all keys at their defaults)
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-    eval_obj = basemesh.evaluated_get(depsgraph)
-    eval_mesh = eval_obj.to_mesh()
-    base_co = np.zeros(num_verts * 3)
-    eval_mesh.vertices.foreach_get("co", base_co)
-    base_co = base_co.copy()
-    eval_obj.to_mesh_clear()
-
     result = {}
 
-    # Get base vertex positions for spatial filtering (Blender Z-up)
-    base_positions = base_co.reshape(-1, 3)
-    # Find the chest/breast region: roughly upper 40-70% of Z height
-    z_min = base_positions[:, 2].min()
-    z_max = base_positions[:, 2].max()
+    # Get basis vertex positions for spatial filtering (Blender Z-up)
+    z_values = [basis_key.data[i].co.z for i in range(num_verts)]
+    z_min = min(z_values)
+    z_max = max(z_values)
     z_range = z_max - z_min
     chest_z_low = z_min + z_range * 0.40   # below navel
     chest_z_high = z_min + z_range * 0.75  # above shoulders
     print(f"  Breast region filter: z={chest_z_low:.4f} to {chest_z_high:.4f} (model z={z_min:.4f}-{z_max:.4f})")
 
-    def capture_delta(key_to_change, target_value, spatial_filter=False):
-        """Set a shape key to target_value, capture vertex positions, compute delta from base.
+    def extract_deltas(shape_key, spatial_filter=False):
+        """Read shape key vertex data directly and compute deltas against basis.
+        Bypasses depsgraph entirely — 100% deterministic.
         If spatial_filter=True, only include vertices in the chest/breast region."""
-        key_to_change.value = target_value
-        depsgraph.update()
-        eval_obj = basemesh.evaluated_get(depsgraph)
-        eval_mesh = eval_obj.to_mesh()
-        co = np.zeros(num_verts * 3)
-        eval_mesh.vertices.foreach_get("co", co)
-        co = co.copy()
-        eval_obj.to_mesh_clear()
-        key_to_change.value = default_values[key_to_change.name]
-
-        deltas = (co - base_co).reshape(-1, 3)
         offsets = {}
         for i in range(num_verts):
-            dx, dy, dz = deltas[i]
+            sk_co = shape_key.data[i].co
+            b_co = basis_key.data[i].co
+            dx = sk_co.x - b_co.x
+            dy = sk_co.y - b_co.y
+            dz = sk_co.z - b_co.z
             if abs(dx) > 1e-6 or abs(dy) > 1e-6 or abs(dz) > 1e-6:
-                # Skip vertices outside chest region if spatial filtering is on
                 if spatial_filter:
-                    vz = base_positions[i, 2]
-                    if vz < chest_z_low or vz > chest_z_high:
+                    if b_co.z < chest_z_low or b_co.z > chest_z_high:
                         continue
                 offsets[i] = (float(dx), float(dy), float(dz))
         return offsets
 
-    # Capture breast-size-incr: set cupsize key to 1.0
-    # Use spatial filter to restrict to chest region — depsgraph captures global body changes
-    cup_offsets = capture_delta(cup_key, 1.0, spatial_filter=True)
+    # Capture breast-size-incr: read cup shape key data directly (no depsgraph)
+    cup_offsets = extract_deltas(cup_key, spatial_filter=True)
     result["breast-size-incr"] = cup_offsets
     print(f"  breast-size-incr: {len(cup_offsets)} vertices affected (chest-filtered)")
 
@@ -754,9 +742,9 @@ def capture_breast_deltas_from_mpfb2(basemesh):
     result["breast-size-decr"] = decr_offsets
     print(f"  breast-size-decr: {len(decr_offsets)} vertices (negated incr)")
 
-    # Capture breast-firmness-incr: set firmness key to 1.0
+    # Capture breast-firmness-incr: read firmness shape key data directly
     if firm_key:
-        firm_offsets = capture_delta(firm_key, 1.0, spatial_filter=True)
+        firm_offsets = extract_deltas(firm_key, spatial_filter=True)
         result["breast-firmness-incr"] = firm_offsets
         print(f"  breast-firmness-incr: {len(firm_offsets)} vertices affected (chest-filtered)")
 
@@ -764,10 +752,6 @@ def capture_breast_deltas_from_mpfb2(basemesh):
         firm_decr = {i: (-dx, -dy, -dz) for i, (dx, dy, dz) in firm_offsets.items()}
         result["breast-firmness-decr"] = firm_decr
         print(f"  breast-firmness-decr: {len(firm_decr)} vertices (negated incr)")
-
-    # Restore all default values
-    for sk in keys:
-        sk.value = default_values[sk.name]
 
     return result
 
