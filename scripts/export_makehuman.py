@@ -454,9 +454,7 @@ def transfer_morphs_to_clothing(asset_obj, vertex_mappings, all_morph_deltas):
     mesh = asset_obj.data
     num_proxy_verts = len(mesh.vertices)
 
-    if not mesh.shape_keys:
-        asset_obj.shape_key_add(name="Basis", from_mix=False)
-
+    # Don't add Basis key yet — only add if we actually create morph targets
     created = 0
     for sk_name, body_deltas in all_morph_deltas.items():
         # Compute clothing deltas from body deltas via barycentric interpolation
@@ -484,6 +482,20 @@ def transfer_morphs_to_clothing(asset_obj, vertex_mappings, all_morph_deltas):
         if not clothing_deltas:
             continue
 
+        # Filter out morphs with negligible max displacement on this clothing item.
+        # Prevents e.g. shoes getting breast morphs from tiny foot-area deltas.
+        max_mag = 0
+        for dx, dy, dz in clothing_deltas.values():
+            mag = (dx * dx + dy * dy + dz * dz) ** 0.5
+            if mag > max_mag:
+                max_mag = mag
+        if max_mag < 0.001:
+            continue
+
+        # Add Basis key on first morph target
+        if not mesh.shape_keys:
+            asset_obj.shape_key_add(name="Basis", from_mix=False)
+
         sk = asset_obj.shape_key_add(name=sk_name, from_mix=False)
         for idx, (dx, dy, dz) in clothing_deltas.items():
             base = mesh.vertices[idx].co
@@ -492,6 +504,7 @@ def transfer_morphs_to_clothing(asset_obj, vertex_mappings, all_morph_deltas):
             sk.data[idx].co.z = base.z + dz
         sk.value = 0.0
         created += 1
+        print(f"    {sk_name}: {len(clothing_deltas)} verts, max_delta={max_mag:.6f}")
 
     return created
 
@@ -548,8 +561,19 @@ def capture_breast_deltas_from_mpfb2(basemesh):
 
     result = {}
 
-    def capture_delta(key_to_change, target_value):
-        """Set a shape key to target_value, capture vertex positions, compute delta from base."""
+    # Get base vertex positions for spatial filtering (Blender Z-up)
+    base_positions = base_co.reshape(-1, 3)
+    # Find the chest/breast region: roughly upper 40-70% of Z height
+    z_min = base_positions[:, 2].min()
+    z_max = base_positions[:, 2].max()
+    z_range = z_max - z_min
+    chest_z_low = z_min + z_range * 0.40   # below navel
+    chest_z_high = z_min + z_range * 0.75  # above shoulders
+    print(f"  Breast region filter: z={chest_z_low:.4f} to {chest_z_high:.4f} (model z={z_min:.4f}-{z_max:.4f})")
+
+    def capture_delta(key_to_change, target_value, spatial_filter=False):
+        """Set a shape key to target_value, capture vertex positions, compute delta from base.
+        If spatial_filter=True, only include vertices in the chest/breast region."""
         key_to_change.value = target_value
         depsgraph.update()
         eval_obj = basemesh.evaluated_get(depsgraph)
@@ -565,13 +589,19 @@ def capture_breast_deltas_from_mpfb2(basemesh):
         for i in range(num_verts):
             dx, dy, dz = deltas[i]
             if abs(dx) > 1e-6 or abs(dy) > 1e-6 or abs(dz) > 1e-6:
+                # Skip vertices outside chest region if spatial filtering is on
+                if spatial_filter:
+                    vz = base_positions[i, 2]
+                    if vz < chest_z_low or vz > chest_z_high:
+                        continue
                 offsets[i] = (float(dx), float(dy), float(dz))
         return offsets
 
     # Capture breast-size-incr: set cupsize key to 1.0
-    cup_offsets = capture_delta(cup_key, 1.0)
+    # Use spatial filter to restrict to chest region — depsgraph captures global body changes
+    cup_offsets = capture_delta(cup_key, 1.0, spatial_filter=True)
     result["breast-size-incr"] = cup_offsets
-    print(f"  breast-size-incr: {len(cup_offsets)} vertices affected")
+    print(f"  breast-size-incr: {len(cup_offsets)} vertices affected (chest-filtered)")
 
     # breast-size-decr: negate the incr deltas (no mincup key available)
     decr_offsets = {i: (-dx, -dy, -dz) for i, (dx, dy, dz) in cup_offsets.items()}
@@ -580,9 +610,9 @@ def capture_breast_deltas_from_mpfb2(basemesh):
 
     # Capture breast-firmness-incr: set firmness key to 1.0
     if firm_key:
-        firm_offsets = capture_delta(firm_key, 1.0)
+        firm_offsets = capture_delta(firm_key, 1.0, spatial_filter=True)
         result["breast-firmness-incr"] = firm_offsets
-        print(f"  breast-firmness-incr: {len(firm_offsets)} vertices affected")
+        print(f"  breast-firmness-incr: {len(firm_offsets)} vertices affected (chest-filtered)")
 
         # breast-firmness-decr: negate firmness incr
         firm_decr = {i: (-dx, -dy, -dz) for i, (dx, dy, dz) in firm_offsets.items()}
