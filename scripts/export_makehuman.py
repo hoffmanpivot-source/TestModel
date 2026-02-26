@@ -1269,6 +1269,8 @@ def export_clothing_items(basemesh, all_morph_deltas=None):
                 offset_amount = 0.005  # thin tops — close to body
             elif any(kw in name_lower for kw in ("boot", "shoe", "flat", "bootie")):
                 offset_amount = 0.010  # footwear
+            elif "cargo" in name_lower:
+                offset_amount = 0.015  # sparse low-poly mesh needs bigger offset
             else:
                 offset_amount = 0.008  # inner layer (pants, etc.)
             for v in mesh_data.vertices:
