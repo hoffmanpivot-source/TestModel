@@ -1075,22 +1075,87 @@ def export_clothing_items(basemesh, all_morph_deltas=None):
                 has_morphs = morph_count > 0
                 print(f"  {name}: transferred {morph_count} morph targets to clothing")
 
-            # Add Subdivision Surface to match body mesh subdivision level
-            subsurf = asset_obj.modifiers.new(name="Subdivision", type='SUBSURF')
-            subsurf.levels = 1
-            subsurf.render_levels = 1
+            # Bake subdivision into shape keys (same approach as body mesh).
+            # export_apply=True strips shape keys, so we must bake manually.
+            if has_morphs:
+                import numpy as np
+
+                subsurf = asset_obj.modifiers.new(name="Subdivision", type='SUBSURF')
+                subsurf.levels = 1
+                subsurf.render_levels = 1
+
+                # Zero all shape key values, capture subdivided basis
+                for sk in asset_obj.data.shape_keys.key_blocks[1:]:
+                    sk.value = 0.0
+                depsgraph = bpy.context.evaluated_depsgraph_get()
+                eval_obj = asset_obj.evaluated_get(depsgraph)
+                eval_mesh = eval_obj.to_mesh()
+                subdiv_vcount = len(eval_mesh.vertices)
+                basis_co = np.zeros(subdiv_vcount * 3)
+                eval_mesh.vertices.foreach_get("co", basis_co)
+                basis_co = basis_co.copy()
+                eval_obj.to_mesh_clear()
+
+                # Capture each shape key's subdivided positions
+                sk_data = {}
+                for sk in asset_obj.data.shape_keys.key_blocks[1:]:
+                    sk.value = 1.0
+                    depsgraph.update()
+                    eval_obj = asset_obj.evaluated_get(depsgraph)
+                    eval_mesh = eval_obj.to_mesh()
+                    sk_co = np.zeros(subdiv_vcount * 3)
+                    eval_mesh.vertices.foreach_get("co", sk_co)
+                    sk_co = sk_co.copy()
+                    eval_obj.to_mesh_clear()
+                    sk.value = 0.0
+                    deltas = sk_co - basis_co
+                    nonzero = np.count_nonzero(np.abs(deltas.reshape(-1, 3)).max(axis=1) > 1e-6)
+                    if nonzero > 0:
+                        sk_data[sk.name] = deltas
+                print(f"  {name}: baked subdivision for {len(sk_data)} morphs ({subdiv_vcount} verts)")
+
+                # Remove modifier and all shape keys
+                asset_obj.modifiers.remove(subsurf)
+                while asset_obj.data.shape_keys and len(asset_obj.data.shape_keys.key_blocks) > 1:
+                    asset_obj.shape_key_remove(asset_obj.data.shape_keys.key_blocks[-1])
+                if asset_obj.data.shape_keys:
+                    asset_obj.shape_key_remove(asset_obj.data.shape_keys.key_blocks[0])
+
+                # Apply subdivision to base mesh (no shape keys = clean apply)
+                subsurf = asset_obj.modifiers.new(name="Subdivision", type='SUBSURF')
+                subsurf.levels = 1
+                subsurf.render_levels = 1
+                bpy.ops.object.modifier_apply(modifier="Subdivision")
+
+                # Re-add shape keys with subdivided data
+                asset_obj.shape_key_add(name="Basis", from_mix=False)
+                for sk_name_s, deltas in sk_data.items():
+                    sk = asset_obj.shape_key_add(name=sk_name_s, from_mix=False)
+                    deltas_r = deltas.reshape(-1, 3)
+                    for vi in range(len(asset_obj.data.vertices)):
+                        if abs(deltas_r[vi][0]) > 1e-6 or abs(deltas_r[vi][1]) > 1e-6 or abs(deltas_r[vi][2]) > 1e-6:
+                            sk.data[vi].co.x = asset_obj.data.vertices[vi].co.x + deltas_r[vi][0]
+                            sk.data[vi].co.y = asset_obj.data.vertices[vi].co.y + deltas_r[vi][1]
+                            sk.data[vi].co.z = asset_obj.data.vertices[vi].co.z + deltas_r[vi][2]
+                    sk.value = 0.0
+            else:
+                # No morphs — just add SubSurf and apply directly
+                subsurf = asset_obj.modifiers.new(name="Subdivision", type='SUBSURF')
+                subsurf.levels = 1
+                subsurf.render_levels = 1
+                bpy.ops.object.modifier_apply(modifier="Subdivision")
 
             # Select ONLY this object for export
             bpy.ops.object.select_all(action='DESELECT')
             asset_obj.select_set(True)
 
-            # Export as individual GLB (export_apply=True to bake modifiers)
+            # Export as individual GLB (modifiers already applied, shape keys preserved)
             out_path = os.path.join(output_dir, f"{name.lower()}.glb")
             bpy.ops.export_scene.gltf(
                 filepath=out_path,
                 export_format="GLB",
                 use_selection=True,
-                export_apply=True,
+                export_apply=False,
                 export_morph=has_morphs,
                 export_morph_normal=False,
                 export_morph_tangent=False,
