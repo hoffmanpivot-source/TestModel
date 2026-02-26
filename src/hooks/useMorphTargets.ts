@@ -106,15 +106,17 @@ export function useMorphTargets() {
 
   /**
    * Register additional meshes (e.g. clothing with morph targets loaded async).
+   * Removes stale meshes (no longer in any scene) before adding new ones.
    * Applies current morph state to newly added meshes.
    */
   const addMeshes = useCallback((newMeshes: THREE.Mesh[]) => {
     const morphed = newMeshes.filter(
       (m) => m.morphTargetDictionary && m.morphTargetInfluences
     );
-    if (morphed.length === 0) return;
 
-    meshesRef.current = [...meshesRef.current, ...morphed];
+    // Remove stale meshes that are no longer attached to any parent (removed from scene)
+    const alive = meshesRef.current.filter((m) => m.parent !== null);
+    meshesRef.current = [...alive, ...morphed];
 
     // Sync current morph state to new meshes
     for (const mesh of morphed) {
