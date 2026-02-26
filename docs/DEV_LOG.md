@@ -4,6 +4,19 @@ Persistent log of problems, fixes, and failed attempts. Never delete entries.
 
 ---
 
+## 2026-02-26: Clothing morph deltas too small — delta scaling + spatial fallback
+
+- **Problem**: Barycentric interpolation smooths out deformation at morph boundaries — only 94% max tracking vs body. Pants behind knee had zero tracking for leg morphs (upperleg-fat, upperleg-muscle-incr) at only 9-13% morph values.
+- **Root cause**: Barycentric interpolation averages 3 body vertex deltas, which inherently smooths peaks. For clothing vertices near morph boundaries, the 3 reference body vertices may include vertices with zero delta, dragging the interpolated result toward zero.
+- **Solution**: Two fixes in `export_makehuman.py` `transfer_morphs_to_clothing()`:
+  1. **DELTA_SCALE = 1.15x**: Scale all clothing deltas by 1.15 to compensate for interpolation smoothing
+  2. **KD-tree spatial fallback**: For clothing vertices where barycentric gives near-zero delta, find nearest affected body vertices within 0.05 radius, use inverse-distance-weighted average of their deltas
+  3. **Increased Blender normal offset** from 0.005 to 0.008
+- **Results**: Pants upperleg-fat went from 679 to 1014 affected verts (348 via spatial fallback). Upperleg-muscle-incr from ~0 to 398 verts (37 via fallback).
+- **Commit**: 46ff116
+
+---
+
 ## 2026-02-26: Clothing poke-through investigation and fixes
 - **Problem**: With morphs applied (breast-size, hips), skin pokes through clothing. Feet show through shoes, socks through pants. Clothing morph deltas too small compared to subdivided body.
 - **Root cause (partial)**: Clothing morph deltas are computed from raw .target files (pre-subdivision) while body uses subdivided morph deltas that can be larger. Also, most MakeHuman clothing .mhclo files don't include delete_verts sections to hide body under clothing.
