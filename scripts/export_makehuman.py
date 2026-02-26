@@ -169,17 +169,22 @@ def resolve_target_path(target_dir, target_spec):
     return None
 
 
-def build_vertex_index_map(basemesh):
+def build_vertex_index_map(basemesh, delete_verts=None):
     """Build a mapping from original (full mesh) vertex indices to
-    body-only vertex indices. Uses the 'body' vertex group."""
+    body-only vertex indices. Uses the 'body' vertex group.
+    Optionally excludes delete_verts (body vertices hidden by clothing)."""
     vg = basemesh.vertex_groups.get("body")
     if not vg:
         print("WARNING: No 'body' vertex group found, using all vertices")
         return {i: i for i in range(len(basemesh.data.vertices))}
 
+    if delete_verts is None:
+        delete_verts = set()
+
     vg_idx = vg.index
     old_to_new = {}
     new_idx = 0
+    deleted_count = 0
     for v in basemesh.data.vertices:
         in_body = False
         for g in v.groups:
@@ -187,16 +192,22 @@ def build_vertex_index_map(basemesh):
                 in_body = True
                 break
         if in_body:
-            old_to_new[v.index] = new_idx
-            new_idx += 1
+            if v.index in delete_verts:
+                deleted_count += 1
+            else:
+                old_to_new[v.index] = new_idx
+                new_idx += 1
 
     print(f"  Vertex map: {len(old_to_new)} body vertices out of {len(basemesh.data.vertices)} total")
+    if deleted_count > 0:
+        print(f"  Excluded {deleted_count} vertices covered by clothing (delete_verts)")
     return old_to_new
 
 
-def remove_helper_geometry(basemesh):
-    """Remove non-body vertices using bmesh (reliable in background mode).
-    Must be called BEFORE any shape keys are added."""
+def remove_helper_geometry(basemesh, delete_verts=None):
+    """Remove non-body vertices AND clothing-covered vertices using bmesh.
+    Must be called BEFORE any shape keys are added.
+    delete_verts: set of original vertex indices to also remove (body faces under clothing)."""
     bpy.context.view_layer.objects.active = basemesh
     basemesh.select_set(True)
 
@@ -210,6 +221,9 @@ def remove_helper_geometry(basemesh):
         print("WARNING: No 'body' vertex group, skipping helper removal")
         return
 
+    if delete_verts is None:
+        delete_verts = set()
+
     vg_idx = vg.index
 
     # Use bmesh for reliable vertex deletion in background mode
@@ -219,12 +233,17 @@ def remove_helper_geometry(basemesh):
 
     deform_layer = bm.verts.layers.deform.active
     to_remove = []
+    clothing_removed = 0
     for v in bm.verts:
         dvert = v[deform_layer]
-        if vg_idx not in dvert or dvert[vg_idx] < 0.5:
+        is_body = vg_idx in dvert and dvert[vg_idx] >= 0.5
+        if not is_body:
             to_remove.append(v)
+        elif v.index in delete_verts:
+            to_remove.append(v)
+            clothing_removed += 1
 
-    print(f"  Removing {len(to_remove)} helper vertices...")
+    print(f"  Removing {len(to_remove)} vertices ({clothing_removed} clothing-covered body verts)...")
     bmesh.ops.delete(bm, geom=to_remove, context='VERTS')
     bm.to_mesh(basemesh.data)
     bm.free()
@@ -555,7 +574,9 @@ def parse_mhclo(mhclo_path):
                     try:
                         vertex_mappings.append((int(parts[0]),))
                     except ValueError:
-                        in_verts = False  # Hit a non-vertex line
+                        # Skip keyword lines (material, vertexboneweights_file, etc.)
+                        # that may appear between "verts" and actual vertex data
+                        pass
                 elif len(parts) >= 9:
                     # Barycentric: v1 v2 v3 w1 w2 w3 ox oy oz
                     try:
@@ -564,11 +585,48 @@ def parse_mhclo(mhclo_path):
                         ox, oy, oz = float(parts[6]), float(parts[7]), float(parts[8])
                         vertex_mappings.append((v1, v2, v3, w1, w2, w3, ox, oy, oz))
                     except ValueError:
+                        pass  # Skip non-numeric lines
+                elif len(parts) >= 2:
+                    # Could be a keyword line (e.g. "material foo.mhmat") — skip it
+                    try:
+                        int(parts[0])
+                        # If first part is numeric but wrong count, stop
                         in_verts = False
-                else:
-                    in_verts = False  # End of vertex section
+                    except ValueError:
+                        pass  # Keyword line, skip
 
-    return obj_file, mat_file, vertex_mappings, scale_ref
+    # Parse delete_verts section (body vertices to hide when wearing this item)
+    delete_verts = set()
+    in_delete = False
+    # Re-read the file for delete_verts (simpler than tracking state above)
+    with open(mhclo_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line == "delete_verts":
+                in_delete = True
+                continue
+            if in_delete:
+                # Parse vertex indices and ranges: "1355 - 1459 1471 - 1482 1502"
+                tokens = line.split()
+                i = 0
+                while i < len(tokens):
+                    try:
+                        v = int(tokens[i])
+                        if i + 2 < len(tokens) and tokens[i + 1] == "-":
+                            end = int(tokens[i + 2])
+                            for vi in range(v, end + 1):
+                                delete_verts.add(vi)
+                            i += 3
+                        else:
+                            delete_verts.add(v)
+                            i += 1
+                    except ValueError:
+                        in_delete = False
+                        break
+
+    return obj_file, mat_file, vertex_mappings, scale_ref, delete_verts
 
 
 def compute_offset_scale(basemesh, scale_ref):
@@ -686,7 +744,7 @@ def load_system_assets(basemesh):
             continue
 
         # Parse .mhclo for obj path, material, vertex mappings, and scale reference
-        obj_file, mat_file, vertex_mappings, scale_ref = parse_mhclo(mhclo_path)
+        obj_file, mat_file, vertex_mappings, scale_ref, delete_verts = parse_mhclo(mhclo_path)
 
         if not obj_file or not os.path.exists(obj_file):
             print(f"  {name}: no obj file found")
@@ -793,22 +851,31 @@ def export_clothing_items(basemesh):
 
     Must be called while basemesh still has full vertex set (before helper removal).
     Each item is loaded, fitted, exported as its own GLB, then removed from scene.
+
+    Returns (exported_names, all_delete_verts) where all_delete_verts is the union
+    of delete_verts from all clothing items (original basemesh vertex indices).
     """
     clothing_dir = os.path.join(PROJECT_DIR, "assets", "clothing")
     output_dir = os.path.join(PROJECT_DIR, "assets", "models", "clothing")
     os.makedirs(output_dir, exist_ok=True)
 
     exported = []
+    all_delete_verts = set()
     for name, rel_path in CLOTHING_ASSETS:
         mhclo_path = os.path.join(clothing_dir, rel_path)
         if not os.path.exists(mhclo_path):
             print(f"  MISSING: {mhclo_path}")
             continue
 
-        obj_file, mat_file, vertex_mappings, scale_ref = parse_mhclo(mhclo_path)
+        obj_file, mat_file, vertex_mappings, scale_ref, delete_verts = parse_mhclo(mhclo_path)
         if not obj_file or not os.path.exists(obj_file):
             print(f"  {name}: no obj file found")
             continue
+
+        # Collect delete_verts for body masking (only from .mhclo-defined sections)
+        if delete_verts:
+            all_delete_verts.update(delete_verts)
+            print(f"  {name}: {len(delete_verts)} delete_verts collected from .mhclo")
 
         # Find texture
         tex_file = None
@@ -869,17 +936,33 @@ def export_clothing_items(basemesh):
             asset_obj.select_set(True)
             bpy.ops.object.shade_smooth()
 
+            # Push clothing vertices outward along normals to prevent skin poke-through
+            import mathutils
+            mesh_data = asset_obj.data
+            offset_amount = 0.005  # outward push to clear subdivided body surface
+            for v in mesh_data.vertices:
+                n = v.normal
+                if n.length > 0.001:
+                    v.co += n.normalized() * offset_amount
+            mesh_data.update()
+            print(f"  {name}: pushed {len(mesh_data.vertices)} vertices outward by {offset_amount}")
+
+            # Add Subdivision Surface to match body mesh subdivision level
+            subsurf = asset_obj.modifiers.new(name="Subdivision", type='SUBSURF')
+            subsurf.levels = 1
+            subsurf.render_levels = 1
+
             # Select ONLY this object for export
             bpy.ops.object.select_all(action='DESELECT')
             asset_obj.select_set(True)
 
-            # Export as individual GLB
+            # Export as individual GLB (export_apply=True to bake modifiers)
             out_path = os.path.join(output_dir, f"{name.lower()}.glb")
             bpy.ops.export_scene.gltf(
                 filepath=out_path,
                 export_format="GLB",
                 use_selection=True,
-                export_apply=False,
+                export_apply=True,
                 export_morph=False,
                 export_morph_normal=False,
                 export_morph_tangent=False,
@@ -887,6 +970,23 @@ def export_clothing_items(basemesh):
             )
 
             file_size = os.path.getsize(out_path)
+
+            # Copy texture alongside GLB for external loading
+            if tex_file and os.path.exists(tex_file):
+                import shutil
+                tex_ext = os.path.splitext(tex_file)[1]
+                tex_out = os.path.join(output_dir, f"{name.lower()}_diffuse{tex_ext}")
+                shutil.copy2(tex_file, tex_out)
+                print(f"  {name}: texture copied to {tex_out}")
+
+            # Save delete_verts info for future runtime body masking
+            if delete_verts:
+                import json as json_mod
+                meta_path = os.path.join(output_dir, f"{name.lower()}_meta.json")
+                with open(meta_path, "w") as mf:
+                    json_mod.dump({"delete_verts": sorted(delete_verts)}, mf)
+                print(f"  {name}: {len(delete_verts)} delete_verts saved to meta")
+
             print(f"  {name}: exported {out_path} ({file_size / 1024:.0f} KB)")
             exported.append(name)
 
@@ -900,7 +1000,8 @@ def export_clothing_items(basemesh):
             import traceback
             traceback.print_exc()
 
-    return exported
+    print(f"  Total delete_verts from all clothing: {len(all_delete_verts)}")
+    return exported, all_delete_verts
 
 
 def postprocess_glb_alpha(glb_path):
@@ -1009,8 +1110,10 @@ def main():
     # STEP 0b2: Export clothing items as separate GLBs
     # Must happen while basemesh still has full vertex set for mhclo fitting
     print("\nStep 0b2: Exporting clothing items...")
-    clothing_exported = export_clothing_items(basemesh)
+    clothing_exported, _clothing_delete_verts = export_clothing_items(basemesh)
     print(f"  Exported {len(clothing_exported)} clothing items: {', '.join(clothing_exported)}")
+    # NOTE: delete_verts disabled — body mesh kept intact, clothing uses offset instead
+    clothing_delete_verts = set()
 
     # STEP 0c: Remove MPFB2's default shape keys (they have non-zero values
     # that distort the mesh). Must zero all values first, then remove
@@ -1033,12 +1136,13 @@ def main():
         print("\nStep 0: No default shape keys to remove")
 
     # STEP 1: Build vertex index map BEFORE removing helpers
+    # Also exclude clothing-covered vertices from the map
     print("\nStep 1: Building vertex index map...")
-    old_to_new = build_vertex_index_map(basemesh)
+    old_to_new = build_vertex_index_map(basemesh, delete_verts=clothing_delete_verts)
 
-    # STEP 2: Remove helper geometry (BEFORE adding shape keys!)
-    print("\nStep 2: Removing helper geometry...")
-    remove_helper_geometry(basemesh)
+    # STEP 2: Remove helper geometry AND clothing-covered body faces
+    print("\nStep 2: Removing helper geometry + clothing-covered faces...")
+    remove_helper_geometry(basemesh, delete_verts=clothing_delete_verts)
 
     # STEP 3: Add a basic material
     print("\nStep 3: Adding material...")

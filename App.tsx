@@ -17,14 +17,14 @@ import { ModelViewer } from "./src/components/ModelViewer";
 import { MorphPanel } from "./src/components/MorphPanel";
 import { useMorphTargets } from "./src/hooks/useMorphTargets";
 
-const APP_VERSION = "0.0.28";
+const APP_VERSION = "0.0.32";
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const MODEL_ASSET = require("./assets/models/makehuman_base.glb");
 const CLOTHING_ASSETS = [
-  require("./assets/models/clothing/tshirt.glb"),
-  require("./assets/models/clothing/pants.glb"),
-  require("./assets/models/clothing/shoes.glb"),
+  { glb: require("./assets/models/clothing/tshirt.glb"), tex: require("./assets/models/clothing/tshirt_diffuse.png") },
+  { glb: require("./assets/models/clothing/pants.glb"), tex: require("./assets/models/clothing/pants_diffuse.png") },
+  { glb: require("./assets/models/clothing/shoes.glb"), tex: require("./assets/models/clothing/shoes_diffuse.png") },
 ];
 
 const DEV_SCREENSHOT_URL = "http://10.1.1.19:8766/screenshot";
@@ -32,7 +32,7 @@ const DEV_SCREENSHOT_URL = "http://10.1.1.19:8766/screenshot";
 export default function App() {
   const [modelError, setModelError] = useState<string | null>(null);
   const [modelUri, setModelUri] = useState<string | null>(null);
-  const [clothingUris, setClothingUris] = useState<string[]>([]);
+  const [clothingItems, setClothingItems] = useState<Array<{ glbUri: string; texUri: string }>>([]);
   const [assetReady, setAssetReady] = useState(false);
   const {
     categories,
@@ -56,17 +56,18 @@ export default function App() {
           setModelUri(asset.localUri);
         }
 
-        // Load clothing assets
-        const clothingLocalUris: string[] = [];
-        for (const clothingModule of CLOTHING_ASSETS) {
-          const clothingAsset = Asset.fromModule(clothingModule);
-          await clothingAsset.downloadAsync();
-          if (clothingAsset.localUri) {
-            clothingLocalUris.push(clothingAsset.localUri);
-            console.log("[App] Clothing asset:", clothingAsset.localUri);
+        // Load clothing assets (GLB + texture pairs)
+        const items: Array<{ glbUri: string; texUri: string }> = [];
+        for (const { glb, tex } of CLOTHING_ASSETS) {
+          const glbAsset = Asset.fromModule(glb);
+          const texAsset = Asset.fromModule(tex);
+          await Promise.all([glbAsset.downloadAsync(), texAsset.downloadAsync()]);
+          if (glbAsset.localUri && texAsset.localUri) {
+            items.push({ glbUri: glbAsset.localUri, texUri: texAsset.localUri });
+            console.log("[App] Clothing:", glbAsset.localUri);
           }
         }
-        setClothingUris(clothingLocalUris);
+        setClothingItems(items);
       } catch (err) {
         console.warn("[App] Failed to load model asset:", err);
       }
@@ -197,7 +198,7 @@ export default function App() {
       <View style={styles.viewer}>
         <ModelViewer
           modelUri={modelUri}
-          clothingUris={clothingUris}
+          clothingItems={clothingItems}
           onModelLoaded={handleModelLoaded}
           onError={handleError}
           version={APP_VERSION}

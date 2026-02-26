@@ -21,9 +21,14 @@ const EYEBROW_TEXTURE = require("../../assets/textures/eyebrow_diffuse.png");
 const EYELASH_TEXTURE = require("../../assets/textures/eyelash_diffuse.png");
 const TEETH_TEXTURE = require("../../assets/textures/teeth_diffuse.png");
 
+interface ClothingItem {
+  glbUri: string;
+  texUri: string;
+}
+
 interface Props {
   modelUri: string | null;
-  clothingUris?: string[];
+  clothingItems?: ClothingItem[];
   onModelLoaded: (scene: THREE.Group) => void;
   onError: (error: string) => void;
   version?: string;
@@ -39,7 +44,7 @@ interface OrbitState {
   targetZ: number;
 }
 
-export function ModelViewer({ modelUri, clothingUris, onModelLoaded, onError, version }: Props) {
+export function ModelViewer({ modelUri, clothingItems, onModelLoaded, onError, version }: Props) {
   const rendererRef = useRef<Renderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
@@ -49,7 +54,7 @@ export function ModelViewer({ modelUri, clothingUris, onModelLoaded, onError, ve
   const contextReadyRef = useRef(false);
   const loadedUriRef = useRef<string | null>(null);
   const clothingGroupRef = useRef<THREE.Group | null>(null);
-  const loadedClothingRef = useRef<string[]>([]);
+  const loadedClothingRef = useRef<ClothingItem[]>([]);
 
   // Camera orbit state
   const orbitRef = useRef<OrbitState>({
@@ -292,6 +297,9 @@ export function ModelViewer({ modelUri, clothingUris, onModelLoaded, onError, ve
                       map: textures.skin || null,
                       roughness: 0.6,
                       metalness: 0.0,
+                      polygonOffset: true,
+                      polygonOffsetFactor: 1,
+                      polygonOffsetUnits: 1,
                       clearcoat: 0.05,
                       clearcoatRoughness: 0.8,
                       sheen: 0.3,
@@ -373,9 +381,9 @@ export function ModelViewer({ modelUri, clothingUris, onModelLoaded, onError, ve
 
               onModelLoaded(model);
 
-              // Load clothing if URIs provided
-              if (clothingUris && clothingUris.length > 0) {
-                loadClothingGLBs(clothingUris);
+              // Load clothing if items provided
+              if (clothingItems && clothingItems.length > 0) {
+                loadClothingGLBs(clothingItems);
               }
             },
             (err) => {
@@ -392,12 +400,11 @@ export function ModelViewer({ modelUri, clothingUris, onModelLoaded, onError, ve
     [onModelLoaded, onError, updateCamera]
   );
 
-  // Load clothing GLBs into the model group (same transform)
+  // Load clothing GLBs with external textures into the model group
   const loadClothingGLBs = useCallback(
-    (uris: string[]) => {
+    (items: ClothingItem[]) => {
       const model = modelRef.current;
-      const scene = sceneRef.current;
-      if (!model || !scene) return;
+      if (!model) return;
 
       // Remove old clothing group
       if (clothingGroupRef.current) {
@@ -408,27 +415,62 @@ export function ModelViewer({ modelUri, clothingUris, onModelLoaded, onError, ve
       model.add(clothingGroup);
       clothingGroupRef.current = clothingGroup;
 
-      const loader = new GLTFLoader();
+      const gltfLoader = new GLTFLoader();
+      const texLoader = new ExpoTextureLoader();
 
-      for (const uri of uris) {
-        fetch(uri)
+      for (const item of items) {
+        // Load texture and GLB in parallel
+        const texPromise = new Promise<THREE.Texture | null>((resolve) => {
+          texLoader.load(
+            item.texUri,
+            (tex: THREE.Texture) => {
+              tex.flipY = false;
+              tex.colorSpace = THREE.SRGBColorSpace;
+              tex.needsUpdate = true;
+              resolve(tex);
+            },
+            undefined,
+            () => resolve(null)
+          );
+        });
+
+        fetch(item.glbUri)
           .then((res) => res.arrayBuffer())
-          .then((buffer) => {
+          .then(async (buffer) => {
             const cleanBuffer = stripEmbeddedTextures(buffer);
-            loader.parse(
+            const tex = await texPromise;
+
+            gltfLoader.parse(
               cleanBuffer,
               "",
               (gltf) => {
                 const clothingScene = gltf.scene;
-                // Clothing GLBs are already in the same coordinate space as the base model
-                // (fitted to same basemesh), so no extra transform needed
                 clothingGroup.add(clothingScene);
-                console.log(`[ModelViewer] Clothing loaded: ${uri.split("/").pop()}`);
 
-                // Log mesh names for debugging
+                // Apply external texture and push outward to prevent z-fighting
                 clothingScene.traverse((child) => {
                   if (child instanceof THREE.Mesh) {
-                    console.log(`[ModelViewer] Clothing mesh: "${child.name}"`);
+                    child.material = new THREE.MeshStandardMaterial({
+                      map: tex,
+                      roughness: 0.8,
+                      metalness: 0.0,
+                    });
+
+                    // Push clothing outward along normals to prevent skin poke-through
+                    const geo = child.geometry;
+                    const pos = geo.getAttribute("position");
+                    const norm = geo.getAttribute("normal");
+                    if (pos && norm) {
+                      const offset = 0.008;
+                      for (let i = 0; i < pos.count; i++) {
+                        pos.setX(i, pos.getX(i) + norm.getX(i) * offset);
+                        pos.setY(i, pos.getY(i) + norm.getY(i) * offset);
+                        pos.setZ(i, pos.getZ(i) + norm.getZ(i) * offset);
+                      }
+                      pos.needsUpdate = true;
+                    }
+
+                    console.log(`[ModelViewer] Clothing mesh: "${child.name}" (tex: ${tex ? "yes" : "no"})`);
                   }
                 });
               },
@@ -442,21 +484,21 @@ export function ModelViewer({ modelUri, clothingUris, onModelLoaded, onError, ve
           });
       }
 
-      loadedClothingRef.current = uris;
+      loadedClothingRef.current = items;
     },
     []
   );
 
-  // React to clothingUris changes
+  // React to clothingItems changes
   useEffect(() => {
     if (
-      clothingUris &&
+      clothingItems &&
       modelRef.current &&
-      JSON.stringify(clothingUris) !== JSON.stringify(loadedClothingRef.current)
+      JSON.stringify(clothingItems) !== JSON.stringify(loadedClothingRef.current)
     ) {
-      loadClothingGLBs(clothingUris);
+      loadClothingGLBs(clothingItems);
     }
-  }, [clothingUris, loadClothingGLBs]);
+  }, [clothingItems, loadClothingGLBs]);
 
   const onContextCreate = useCallback(
     (gl: ExpoWebGLRenderingContext) => {
