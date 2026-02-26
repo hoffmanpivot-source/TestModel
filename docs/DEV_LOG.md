@@ -213,3 +213,12 @@ Strip embedded textures from GLB at load time (`stripEmbeddedTextures()`), load 
 - **Root cause**: `addMeshes()` in `useMorphTargets.ts` appended new clothing meshes to `meshesRef.current` without removing old ones. The 3D scene correctly removed old clothing (via `model.remove(clothingGroup)`), but `meshesRef.current` still held references to the orphaned meshes. Morph updates were applied to both live and stale meshes.
 - **Fix**: Before adding new meshes, filter `meshesRef.current` to only keep meshes with `parent !== null` (still attached to the scene graph). Orphaned meshes get pruned automatically.
 - **Commit**: 70ad1b0
+
+---
+
+## 2026-02-26: Stale morph state on clothing swap
+
+- **Problem**: Switching clothes while morphs are active (sliders moved) caused new clothing to load flat (un-morphed), creating tearing between morphed body and un-morphed clothing. Resetting sliders before swapping clothes worked as a workaround.
+- **Root cause**: Stale closure. `syncMorphState` is a `useCallback` with `[morphState]` dependency. When `loadClothingGLBs` starts async GLB loading, it captures the current `onClothingMeshesLoaded` callback. By the time loading completes, morphState may have changed, but the captured `syncMorphState` still has the old values. The `addMeshes` function also had `[]` deps and just zeroed out new meshes.
+- **Fix**: Added `morphStateRef` (always current via `morphStateRef.current = morphState`). `addMeshes` now reads the latest morph state from the ref and applies it directly to new meshes, bypassing the stale closure issue entirely.
+- **Commit**: c226cfa

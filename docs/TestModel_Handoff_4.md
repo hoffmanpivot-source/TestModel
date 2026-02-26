@@ -1,7 +1,7 @@
 # TestModel Handoff — Session 4
 
 ## Where We Are
-- **Latest commit**: 70ad1b0
+- **Latest commit**: c226cfa
 - **App**: React Native + Expo + Three.js MakeHuman character viewer with morph target sliders + clothing switcher
 - **Current work**: Testing clothing switcher after fixing camisole puffiness + delete_verts
 
@@ -14,6 +14,7 @@
 6. Fixed camisole puffiness — thin tops get 0.005 offset vs 0.020 for sweaters (4bf70be)
 7. Fixed delete_verts — intersection per category, not union of all (4bf70be)
 8. Fixed mesh accumulation bug — old clothing meshes weren't pruned from morph system on swap (70ad1b0)
+9. Fixed stale morph state on clothing swap — new clothes now get current morph values (c226cfa)
 
 ## What's Next
 1. Test clothing switching on device with fixed offsets
