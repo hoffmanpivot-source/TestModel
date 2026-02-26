@@ -444,6 +444,59 @@ def collect_all_morph_deltas(target_dir, breast_deltas):
     return all_deltas
 
 
+def _build_adjacency(mesh):
+    """Build vertex adjacency dict from mesh polygons."""
+    adj = {}
+    for poly in mesh.polygons:
+        verts = list(poly.vertices)
+        for i, v in enumerate(verts):
+            if v not in adj:
+                adj[v] = set()
+            for j, v2 in enumerate(verts):
+                if i != j:
+                    adj[v].add(v2)
+    return adj
+
+
+def _smooth_deltas(clothing_deltas, adjacency, num_verts, iterations=3):
+    """Propagate deltas from affected vertices to unaffected neighbors.
+
+    At morph boundaries (e.g. knee where upper leg morphs stop), this creates
+    smooth transitions instead of sharp discontinuities that cause tearing.
+    Each iteration, unaffected vertices adopt a fraction of their neighbors' deltas.
+    """
+    current = dict(clothing_deltas)
+    for it in range(iterations):
+        new_deltas = {}
+        propagated = 0
+        for vi in range(num_verts):
+            if vi in current:
+                new_deltas[vi] = current[vi]
+                continue
+            if vi not in adjacency:
+                continue
+            # Check if any neighbors have deltas
+            neighbor_deltas = []
+            for nv in adjacency[vi]:
+                if nv in current:
+                    neighbor_deltas.append(current[nv])
+            if not neighbor_deltas:
+                continue
+            # Average neighbor deltas, attenuated by 0.5 per iteration
+            attenuation = 0.5 ** (it + 1)
+            avg_dx = sum(d[0] for d in neighbor_deltas) / len(neighbor_deltas) * attenuation
+            avg_dy = sum(d[1] for d in neighbor_deltas) / len(neighbor_deltas) * attenuation
+            avg_dz = sum(d[2] for d in neighbor_deltas) / len(neighbor_deltas) * attenuation
+            mag = (avg_dx ** 2 + avg_dy ** 2 + avg_dz ** 2) ** 0.5
+            if mag > 1e-6:
+                new_deltas[vi] = (avg_dx, avg_dy, avg_dz)
+                propagated += 1
+        current = new_deltas
+        if propagated == 0:
+            break
+    return current
+
+
 def transfer_morphs_to_clothing(asset_obj, vertex_mappings, all_morph_deltas, basemesh):
     """Create shape keys on a clothing mesh by interpolating body morph deltas
     through the .mhclo barycentric vertex mappings.
@@ -451,20 +504,22 @@ def transfer_morphs_to_clothing(asset_obj, vertex_mappings, all_morph_deltas, ba
     For each body morph target, each clothing vertex's delta is computed as:
       clothing_delta = w1*body_delta(v1) + w2*body_delta(v2) + w3*body_delta(v3)
 
-    Two fixes for tracking accuracy:
-    1. All deltas scaled by DELTA_SCALE (1.15) to compensate for interpolation smoothing
+    Three fixes for tracking accuracy:
+    1. All deltas scaled by DELTA_SCALE (1.3) to compensate for interpolation smoothing
        at morph boundaries where reference vertices straddle affected/unaffected areas.
     2. KD-tree spatial fallback: for clothing vertices where barycentric interpolation
        gives near-zero delta but nearby body vertices ARE affected, use the nearest
        affected body vertex's delta. Fixes e.g. pants behind knee with leg morphs.
+    3. Delta smoothing: propagate deltas from affected vertices to unaffected neighbors
+       to create smooth transitions at morph boundaries (prevents tearing at seams).
     """
     from mathutils.kdtree import KDTree
 
     mesh = asset_obj.data
     num_proxy_verts = len(mesh.vertices)
 
-    DELTA_SCALE = 1.15  # Compensate for barycentric smoothing at morph boundaries
-    FALLBACK_RADIUS = 0.05  # Max distance for spatial fallback (model scale ~0.1)
+    DELTA_SCALE = 1.3   # Compensate for barycentric smoothing at morph boundaries
+    FALLBACK_RADIUS = 0.1  # Max distance for spatial fallback (model scale ~0.1)
 
     # Build KD-tree from basemesh for spatial fallback lookups
     body_verts = basemesh.data.vertices
@@ -473,9 +528,13 @@ def transfer_morphs_to_clothing(asset_obj, vertex_mappings, all_morph_deltas, ba
         kd.insert(v.co, vi)
     kd.balance()
 
+    # Build adjacency graph for delta smoothing
+    adjacency = _build_adjacency(mesh)
+
     # Don't add Basis key yet — only add if we actually create morph targets
     created = 0
     fallback_used_total = 0
+    smoothed_total = 0
     for sk_name, body_deltas in all_morph_deltas.items():
         # Compute clothing deltas from body deltas via barycentric interpolation
         clothing_deltas = {}
@@ -505,9 +564,7 @@ def transfer_morphs_to_clothing(asset_obj, vertex_mappings, all_morph_deltas, ba
             # Spatial fallback: if barycentric delta is tiny, check nearest body vertices
             if interp_mag < 0.0005:
                 clothing_pos = mesh.vertices[i].co
-                nearest = kd.find_n(clothing_pos, 8)
-                best_delta = None
-                best_mag = 0
+                nearest = kd.find_n(clothing_pos, 12)
                 total_weight = 0
                 weighted_dx, weighted_dy, weighted_dz = 0, 0, 0
                 for (co, idx, dist) in nearest:
@@ -535,6 +592,12 @@ def transfer_morphs_to_clothing(asset_obj, vertex_mappings, all_morph_deltas, ba
         if not clothing_deltas:
             continue
 
+        # Smooth deltas: propagate from affected to unaffected neighbors
+        # to prevent sharp discontinuities at morph boundaries (e.g. knee seams)
+        pre_smooth = len(clothing_deltas)
+        clothing_deltas = _smooth_deltas(clothing_deltas, adjacency, num_proxy_verts)
+        smoothed = len(clothing_deltas) - pre_smooth
+
         # Filter out morphs with negligible max displacement on this clothing item.
         # Prevents e.g. shoes getting breast morphs from tiny foot-area deltas.
         max_mag = 0
@@ -558,11 +621,17 @@ def transfer_morphs_to_clothing(asset_obj, vertex_mappings, all_morph_deltas, ba
         sk.value = 0.0
         created += 1
         fallback_used_total += fallback_used
-        fb_str = f" ({fallback_used} spatial fallback)" if fallback_used > 0 else ""
-        print(f"    {sk_name}: {len(clothing_deltas)} verts, max_delta={max_mag:.6f}{fb_str}")
+        smoothed_total += smoothed
+        extras = []
+        if fallback_used > 0:
+            extras.append(f"{fallback_used} fallback")
+        if smoothed > 0:
+            extras.append(f"{smoothed} smoothed")
+        extra_str = f" ({', '.join(extras)})" if extras else ""
+        print(f"    {sk_name}: {len(clothing_deltas)} verts, max_delta={max_mag:.6f}{extra_str}")
 
-    if fallback_used_total > 0:
-        print(f"    Total spatial fallback vertices: {fallback_used_total}")
+    if fallback_used_total > 0 or smoothed_total > 0:
+        print(f"    Total: {fallback_used_total} fallback, {smoothed_total} smoothed vertices")
     return created
 
 
@@ -1144,10 +1213,18 @@ def export_clothing_items(basemesh, all_morph_deltas=None):
             asset_obj.select_set(True)
             bpy.ops.object.shade_smooth()
 
-            # Push clothing vertices outward along normals to prevent skin poke-through
+            # Push clothing vertices outward along normals to prevent skin poke-through.
+            # Outer layers (sweaters, jackets) get larger offset than inner layers (pants, boots)
+            # to maintain proper layering at hemlines.
             import mathutils
             mesh_data = asset_obj.data
-            offset_amount = 0.008  # outward push to clear subdivided body surface
+            name_lower = name.lower()
+            if any(kw in name_lower for kw in ("sweater", "shirt", "jacket", "top", "blouse")):
+                offset_amount = 0.012  # outer layer — above pants waistband
+            elif any(kw in name_lower for kw in ("boot", "shoe")):
+                offset_amount = 0.010  # boots — outside socks/pants cuffs
+            else:
+                offset_amount = 0.008  # inner layer (pants, etc.)
             for v in mesh_data.vertices:
                 n = v.normal
                 if n.length > 0.001:
