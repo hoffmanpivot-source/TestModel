@@ -105,6 +105,57 @@ export function useMorphTargets() {
   }, [morphState]);
 
   /**
+   * Register additional meshes (e.g. clothing with morph targets loaded async).
+   * Applies current morph state to newly added meshes.
+   */
+  const addMeshes = useCallback((newMeshes: THREE.Mesh[]) => {
+    const morphed = newMeshes.filter(
+      (m) => m.morphTargetDictionary && m.morphTargetInfluences
+    );
+    if (morphed.length === 0) return;
+
+    meshesRef.current = [...meshesRef.current, ...morphed];
+
+    // Sync current morph state to new meshes
+    for (const mesh of morphed) {
+      if (!mesh.morphTargetDictionary || !mesh.morphTargetInfluences) continue;
+      mesh.morphTargetInfluences.fill(0);
+    }
+  }, []);
+
+  /**
+   * Apply current morph state to all registered meshes (used after adding new meshes).
+   */
+  const syncMorphState = useCallback(() => {
+    const pairSuffixes: [string, string][] = [
+      ["-incr", "-decr"],
+      ["-up", "-down"],
+    ];
+
+    for (const [targetName, value] of Object.entries(morphState)) {
+      for (const mesh of meshesRef.current) {
+        if (!mesh.morphTargetDictionary || !mesh.morphTargetInfluences) continue;
+
+        let applied = false;
+        for (const [posSuffix, negSuffix] of pairSuffixes) {
+          const posName = targetName + posSuffix;
+          const negName = targetName + negSuffix;
+          if (posName in mesh.morphTargetDictionary && negName in mesh.morphTargetDictionary) {
+            mesh.morphTargetInfluences[mesh.morphTargetDictionary[posName]] = Math.max(0, value);
+            mesh.morphTargetInfluences[mesh.morphTargetDictionary[negName]] = Math.max(0, -value);
+            applied = true;
+            break;
+          }
+        }
+
+        if (!applied && targetName in mesh.morphTargetDictionary) {
+          mesh.morphTargetInfluences[mesh.morphTargetDictionary[targetName]] = value;
+        }
+      }
+    }
+  }, [morphState]);
+
+  /**
    * Toggle category expansion.
    */
   const toggleCategory = useCallback((categoryName: string) => {
@@ -122,6 +173,8 @@ export function useMorphTargets() {
     setMorphValue,
     resetAll,
     toggleCategory,
+    addMeshes,
+    syncMorphState,
     meshCount: meshesRef.current.length,
     targetCount: Object.keys(morphState).length,
   };

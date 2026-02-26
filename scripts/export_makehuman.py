@@ -378,6 +378,124 @@ def load_target_offsets(target_dir, target_spec, old_to_new, num_verts):
     return offsets
 
 
+def load_raw_target_offsets(target_dir, target_spec):
+    """Load a .target(.gz) file and return offsets using ORIGINAL vertex indices (no remapping).
+    Used for clothing morph transfer where .mhclo mappings reference original indices."""
+    target_path = resolve_target_path(target_dir, target_spec)
+    if not target_path:
+        return {}
+
+    opener = gzip.open if target_path.endswith(".gz") else open
+    with opener(target_path, "rt") as f:
+        lines = f.readlines()
+
+    offsets = {}
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) >= 4:
+            idx = int(parts[0])
+            offsets[idx] = (float(parts[1]), float(parts[2]), float(parts[3]))
+
+    return offsets
+
+
+def collect_all_morph_deltas(target_dir, breast_deltas):
+    """Collect all morph target deltas using ORIGINAL vertex indices.
+
+    Returns dict[morph_name, dict[vertex_idx, (dx, dy, dz)]].
+    Used for clothing morph transfer — .mhclo mappings reference original indices.
+    """
+    all_deltas = {}
+
+    # Load CURATED_TARGETS
+    for target_spec in CURATED_TARGETS:
+        raw_name = os.path.basename(target_spec)
+        sk_name = TARGET_NAME_OVERRIDES.get(raw_name, raw_name)
+        offsets = load_raw_target_offsets(target_dir, target_spec)
+        if offsets:
+            all_deltas[sk_name] = offsets
+
+    # Load SYMMETRIC_TARGETS (merge L/R)
+    for sk_name, r_spec, l_spec in SYMMETRIC_TARGETS:
+        r_offsets = load_raw_target_offsets(target_dir, r_spec)
+        l_offsets = load_raw_target_offsets(target_dir, l_spec)
+        if not r_offsets and not l_offsets:
+            continue
+        merged = {}
+        for idx, (dx, dy, dz) in r_offsets.items():
+            merged[idx] = (dx, dy, dz)
+        for idx, (dx, dy, dz) in l_offsets.items():
+            if idx in merged:
+                ox, oy, oz = merged[idx]
+                merged[idx] = (ox + dx, oy + dy, oz + dz)
+            else:
+                merged[idx] = (dx, dy, dz)
+        all_deltas[sk_name] = merged
+
+    # Include breast deltas (already in original-index space)
+    if breast_deltas:
+        for sk_name, offsets in breast_deltas.items():
+            all_deltas[sk_name] = offsets
+
+    print(f"  Collected {len(all_deltas)} morph targets for clothing transfer")
+    return all_deltas
+
+
+def transfer_morphs_to_clothing(asset_obj, vertex_mappings, all_morph_deltas):
+    """Create shape keys on a clothing mesh by interpolating body morph deltas
+    through the .mhclo barycentric vertex mappings.
+
+    For each body morph target, each clothing vertex's delta is computed as:
+      clothing_delta = w1*body_delta(v1) + w2*body_delta(v2) + w3*body_delta(v3)
+    """
+    mesh = asset_obj.data
+    num_proxy_verts = len(mesh.vertices)
+
+    if not mesh.shape_keys:
+        asset_obj.shape_key_add(name="Basis", from_mix=False)
+
+    created = 0
+    for sk_name, body_deltas in all_morph_deltas.items():
+        # Compute clothing deltas from body deltas via barycentric interpolation
+        clothing_deltas = {}
+        for i in range(min(len(vertex_mappings), num_proxy_verts)):
+            mapping = vertex_mappings[i]
+            if len(mapping) == 1:
+                # Simple 1:1 mapping — copy body delta directly
+                base_idx = mapping[0]
+                if base_idx in body_deltas:
+                    clothing_deltas[i] = body_deltas[base_idx]
+            elif len(mapping) == 9:
+                # Barycentric: interpolate body deltas with weights
+                v1, v2, v3, w1, w2, w3, _ox, _oy, _oz = mapping
+                v1, v2, v3 = int(v1), int(v2), int(v3)
+                d1 = body_deltas.get(v1, (0, 0, 0))
+                d2 = body_deltas.get(v2, (0, 0, 0))
+                d3 = body_deltas.get(v3, (0, 0, 0))
+                dx = w1 * d1[0] + w2 * d2[0] + w3 * d3[0]
+                dy = w1 * d1[1] + w2 * d2[1] + w3 * d3[1]
+                dz = w1 * d1[2] + w2 * d2[2] + w3 * d3[2]
+                if abs(dx) > 1e-7 or abs(dy) > 1e-7 or abs(dz) > 1e-7:
+                    clothing_deltas[i] = (dx, dy, dz)
+
+        if not clothing_deltas:
+            continue
+
+        sk = asset_obj.shape_key_add(name=sk_name, from_mix=False)
+        for idx, (dx, dy, dz) in clothing_deltas.items():
+            base = mesh.vertices[idx].co
+            sk.data[idx].co.x = base.x + dx
+            sk.data[idx].co.y = base.y + dy
+            sk.data[idx].co.z = base.z + dz
+        sk.value = 0.0
+        created += 1
+
+    return created
+
+
 def capture_breast_deltas_from_mpfb2(basemesh):
     """Capture breast morph deltas from MPFB2's own parametric shape keys via depsgraph.
 
@@ -846,11 +964,14 @@ def load_system_assets(basemesh):
     return loaded
 
 
-def export_clothing_items(basemesh):
+def export_clothing_items(basemesh, all_morph_deltas=None):
     """Export each clothing item as a separate GLB, fitted to the basemesh.
 
     Must be called while basemesh still has full vertex set (before helper removal).
     Each item is loaded, fitted, exported as its own GLB, then removed from scene.
+
+    If all_morph_deltas is provided, morph targets are transferred to clothing
+    via barycentric interpolation before export.
 
     Returns (exported_names, all_delete_verts) where all_delete_verts is the union
     of delete_verts from all clothing items (original basemesh vertex indices).
@@ -947,6 +1068,13 @@ def export_clothing_items(basemesh):
             mesh_data.update()
             print(f"  {name}: pushed {len(mesh_data.vertices)} vertices outward by {offset_amount}")
 
+            # Transfer morph targets from body to clothing via barycentric interpolation
+            has_morphs = False
+            if all_morph_deltas and vertex_mappings:
+                morph_count = transfer_morphs_to_clothing(asset_obj, vertex_mappings, all_morph_deltas)
+                has_morphs = morph_count > 0
+                print(f"  {name}: transferred {morph_count} morph targets to clothing")
+
             # Add Subdivision Surface to match body mesh subdivision level
             subsurf = asset_obj.modifiers.new(name="Subdivision", type='SUBSURF')
             subsurf.levels = 1
@@ -963,7 +1091,7 @@ def export_clothing_items(basemesh):
                 export_format="GLB",
                 use_selection=True,
                 export_apply=True,
-                export_morph=False,
+                export_morph=has_morphs,
                 export_morph_normal=False,
                 export_morph_tangent=False,
                 export_yup=True,
@@ -1107,10 +1235,20 @@ def main():
     system_assets = load_system_assets(basemesh)
     print(f"  Loaded {len(system_assets)} system assets")
 
-    # STEP 0b2: Export clothing items as separate GLBs
+    # STEP 0b2: Collect morph target deltas for clothing transfer
+    # Must happen before clothing export. Uses ORIGINAL vertex indices (same as .mhclo mappings).
+    print("\nStep 0b2: Collecting morph deltas for clothing transfer...")
+    target_dir_early = find_target_dir()
+    if target_dir_early:
+        all_morph_deltas = collect_all_morph_deltas(target_dir_early, breast_deltas)
+    else:
+        print("  WARNING: Cannot find target dir, clothing will have no morph targets")
+        all_morph_deltas = {}
+
+    # STEP 0b3: Export clothing items as separate GLBs WITH morph targets
     # Must happen while basemesh still has full vertex set for mhclo fitting
-    print("\nStep 0b2: Exporting clothing items...")
-    clothing_exported, _clothing_delete_verts = export_clothing_items(basemesh)
+    print("\nStep 0b3: Exporting clothing items with morph targets...")
+    clothing_exported, _clothing_delete_verts = export_clothing_items(basemesh, all_morph_deltas)
     print(f"  Exported {len(clothing_exported)} clothing items: {', '.join(clothing_exported)}")
     # NOTE: delete_verts disabled — body mesh kept intact, clothing uses offset instead
     clothing_delete_verts = set()

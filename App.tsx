@@ -41,6 +41,8 @@ export default function App() {
     setMorphValue,
     resetAll,
     toggleCategory,
+    addMeshes,
+    syncMorphState,
     meshCount,
     targetCount,
   } = useMorphTargets();
@@ -78,6 +80,12 @@ export default function App() {
   const handleModelLoaded = (scene: THREE.Group) => {
     initFromScene(scene);
   };
+
+  const handleClothingMeshesLoaded = useCallback((meshes: THREE.Mesh[]) => {
+    console.log(`[App] Clothing meshes with morphs: ${meshes.length}`);
+    addMeshes(meshes);
+    syncMorphState();
+  }, [addMeshes, syncMorphState]);
 
   const handleError = (error: string) => {
     setModelError(error);
@@ -200,6 +208,7 @@ export default function App() {
           modelUri={modelUri}
           clothingItems={clothingItems}
           onModelLoaded={handleModelLoaded}
+          onClothingMeshesLoaded={handleClothingMeshesLoaded}
           onError={handleError}
           version={APP_VERSION}
         />

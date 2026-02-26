@@ -30,6 +30,7 @@ interface Props {
   modelUri: string | null;
   clothingItems?: ClothingItem[];
   onModelLoaded: (scene: THREE.Group) => void;
+  onClothingMeshesLoaded?: (meshes: THREE.Mesh[]) => void;
   onError: (error: string) => void;
   version?: string;
 }
@@ -44,7 +45,7 @@ interface OrbitState {
   targetZ: number;
 }
 
-export function ModelViewer({ modelUri, clothingItems, onModelLoaded, onError, version }: Props) {
+export function ModelViewer({ modelUri, clothingItems, onModelLoaded, onClothingMeshesLoaded, onError, version }: Props) {
   const rendererRef = useRef<Renderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
@@ -447,7 +448,9 @@ export function ModelViewer({ modelUri, clothingItems, onModelLoaded, onError, v
                 const clothingScene = gltf.scene;
                 clothingGroup.add(clothingScene);
 
-                // Apply external texture and push outward to prevent z-fighting
+                const clothingMeshes: THREE.Mesh[] = [];
+
+                // Apply external texture
                 clothingScene.traverse((child) => {
                   if (child instanceof THREE.Mesh) {
                     child.material = new THREE.MeshStandardMaterial({
@@ -456,23 +459,19 @@ export function ModelViewer({ modelUri, clothingItems, onModelLoaded, onError, v
                       metalness: 0.0,
                     });
 
-                    // Push clothing outward along normals to prevent skin poke-through
-                    const geo = child.geometry;
-                    const pos = geo.getAttribute("position");
-                    const norm = geo.getAttribute("normal");
-                    if (pos && norm) {
-                      const offset = 0.008;
-                      for (let i = 0; i < pos.count; i++) {
-                        pos.setX(i, pos.getX(i) + norm.getX(i) * offset);
-                        pos.setY(i, pos.getY(i) + norm.getY(i) * offset);
-                        pos.setZ(i, pos.getZ(i) + norm.getZ(i) * offset);
-                      }
-                      pos.needsUpdate = true;
+                    const hasMorphs = child.morphTargetDictionary && child.morphTargetInfluences;
+                    if (hasMorphs) {
+                      clothingMeshes.push(child);
                     }
 
-                    console.log(`[ModelViewer] Clothing mesh: "${child.name}" (tex: ${tex ? "yes" : "no"})`);
+                    console.log(`[ModelViewer] Clothing mesh: "${child.name}" (tex: ${tex ? "yes" : "no"}, morphs: ${hasMorphs ? Object.keys(child.morphTargetDictionary!).length : 0})`);
                   }
                 });
+
+                // Register clothing meshes with morph system
+                if (clothingMeshes.length > 0 && onClothingMeshesLoaded) {
+                  onClothingMeshesLoaded(clothingMeshes);
+                }
               },
               (err) => {
                 console.warn(`[ModelViewer] Clothing parse error: ${err}`);
