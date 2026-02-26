@@ -505,16 +505,20 @@ SYSTEM_ASSETS = [
 
 
 def parse_mhclo(mhclo_path):
-    """Parse a .mhclo file and return obj_file, material_file, and vertex mappings.
+    """Parse a .mhclo file and return obj_file, material_file, vertex mappings, and scale ref.
 
     Vertex mapping formats:
       - Simple (1 value per line): proxy_vert -> basemesh_vert (1:1)
       - Barycentric (9 values per line): v1 v2 v3 w1 w2 w3 ox oy oz
         proxy_vert = w1*pos(v1) + w2*pos(v2) + w3*pos(v3) + (ox, oy, oz)
+
+    Returns (obj_file, mat_file, vertex_mappings, scale_ref)
+    where scale_ref is (v1_idx, v2_idx, ref_distance) from x_scale line, or None.
     """
     mhclo_dir = os.path.dirname(mhclo_path)
     obj_file = None
     mat_file = None
+    scale_ref = None  # (v1_idx, v2_idx, ref_distance) from x_scale
     vertex_mappings = []  # list of tuples: either (vidx,) or (v1,v2,v3,w1,w2,w3,ox,oy,oz)
     in_verts = False
 
@@ -529,6 +533,10 @@ def parse_mhclo(mhclo_path):
             elif line.startswith("material "):
                 mat_ref = line.split(None, 1)[1]
                 mat_file = os.path.join(mhclo_dir, mat_ref)
+            elif line.startswith("x_scale "):
+                parts = line.split()
+                if len(parts) >= 4:
+                    scale_ref = (int(parts[1]), int(parts[2]), float(parts[3]))
             elif line.startswith("verts "):
                 in_verts = True
                 continue
@@ -553,21 +561,45 @@ def parse_mhclo(mhclo_path):
                 else:
                     in_verts = False  # End of vertex section
 
-    return obj_file, mat_file, vertex_mappings
+    return obj_file, mat_file, vertex_mappings, scale_ref
 
 
-def fit_proxy_to_basemesh(asset_obj, basemesh, vertex_mappings):
+def compute_offset_scale(basemesh, scale_ref):
+    """Compute the scale factor for .mhclo offsets by comparing actual basemesh
+    vertex distances to the reference distances in the .mhclo file.
+
+    scale_ref is (v1_idx, v2_idx, ref_distance) from the x_scale line.
+    Returns the ratio: actual_distance / ref_distance.
+    """
+    if not scale_ref:
+        return 0.1  # fallback: basemesh created at scale=0.1
+
+    v1_idx, v2_idx, ref_dist = scale_ref
+    verts = basemesh.data.vertices
+    if v1_idx < len(verts) and v2_idx < len(verts) and ref_dist > 0:
+        actual_dist = abs(verts[v1_idx].co.x - verts[v2_idx].co.x)
+        if actual_dist > 1e-8:
+            ratio = actual_dist / ref_dist
+            return ratio
+
+    return 0.1  # fallback
+
+
+def fit_proxy_to_basemesh(asset_obj, basemesh, vertex_mappings, offset_scale=0.1):
     """Reposition proxy mesh vertices to fit the basemesh using .mhclo mappings.
 
     This replaces the OBJ's original vertex positions with positions computed
     from the basemesh, ensuring correct scale and alignment.
+
+    offset_scale: scale factor for .mhclo offset values. The offsets are in
+    MakeHuman's coordinate space (scale=1.0); multiply by this to match
+    the basemesh scale (typically 0.1).
     """
     base_verts = basemesh.data.vertices
     proxy_verts = asset_obj.data.vertices
 
     if len(vertex_mappings) != len(proxy_verts):
         print(f"  WARNING: mapping count ({len(vertex_mappings)}) != proxy verts ({len(proxy_verts)})")
-        # Use min to avoid index errors
         count = min(len(vertex_mappings), len(proxy_verts))
     else:
         count = len(vertex_mappings)
@@ -582,15 +614,15 @@ def fit_proxy_to_basemesh(asset_obj, basemesh, vertex_mappings):
                 proxy_verts[i].co = base_verts[base_idx].co.copy()
                 fitted += 1
         elif len(mapping) == 9:
-            # Barycentric with offset
+            # Barycentric with offset — offsets must be scaled
             v1, v2, v3, w1, w2, w3, ox, oy, oz = mapping
             if v1 < len(base_verts) and v2 < len(base_verts) and v3 < len(base_verts):
                 p1 = base_verts[v1].co
                 p2 = base_verts[v2].co
                 p3 = base_verts[v3].co
-                x = w1 * p1.x + w2 * p2.x + w3 * p3.x + ox
-                y = w1 * p1.y + w2 * p2.y + w3 * p3.y + oy
-                z = w1 * p1.z + w2 * p2.z + w3 * p3.z + oz
+                x = w1 * p1.x + w2 * p2.x + w3 * p3.x + ox * offset_scale
+                y = w1 * p1.y + w2 * p2.y + w3 * p3.y + oy * offset_scale
+                z = w1 * p1.z + w2 * p2.z + w3 * p3.z + oz * offset_scale
                 proxy_verts[i].co.x = x
                 proxy_verts[i].co.y = y
                 proxy_verts[i].co.z = z
@@ -618,8 +650,8 @@ def load_system_assets(basemesh):
             print(f"  MISSING: {mhclo_path}")
             continue
 
-        # Parse .mhclo for obj path, material, and vertex mappings
-        obj_file, mat_file, vertex_mappings = parse_mhclo(mhclo_path)
+        # Parse .mhclo for obj path, material, vertex mappings, and scale reference
+        obj_file, mat_file, vertex_mappings, scale_ref = parse_mhclo(mhclo_path)
 
         if not obj_file or not os.path.exists(obj_file):
             print(f"  {name}: no obj file found")
@@ -657,7 +689,9 @@ def load_system_assets(basemesh):
 
             # Fit proxy vertices to basemesh using .mhclo mappings
             if vertex_mappings:
-                fitted = fit_proxy_to_basemesh(asset_obj, basemesh, vertex_mappings)
+                offset_scale = compute_offset_scale(basemesh, scale_ref)
+                print(f"  {name}: offset_scale={offset_scale:.4f}")
+                fitted = fit_proxy_to_basemesh(asset_obj, basemesh, vertex_mappings, offset_scale)
                 print(f"  {name}: fitted {fitted}/{len(asset_obj.data.vertices)} vertices to basemesh")
             else:
                 print(f"  {name}: WARNING no vertex mappings found, using raw OBJ positions")
