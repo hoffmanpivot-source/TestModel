@@ -4,6 +4,34 @@ Persistent log of problems, fixes, and failed attempts. Never delete entries.
 
 ---
 
+## 2026-02-26: Clothing Morph Target Transfer (Poke-Through Attempt)
+
+### What Was Done
+Implemented morph target transfer from body to clothing via barycentric interpolation in the Blender export script (`scripts/export_makehuman.py`).
+
+**New functions added**:
+- `collect_all_morph_deltas()` — gathers morph deltas from all .target files for the basemesh
+- `load_raw_target_offsets()` — reads raw vertex offsets from a single .target file
+- `transfer_morphs_to_clothing()` — interpolates body morph deltas onto clothing vertices using .mhclo barycentric weights (w1*delta(v1) + w2*delta(v2) + w3*delta(v3))
+
+**Export pipeline changes**:
+- Modified `export_clothing_items()` to accept morph deltas dict and export with `export_morph=True`
+- Clothing GLBs now include morph targets matching the body's morph targets
+
+**Runtime changes (React Native / Three.js)**:
+- Added `addMeshes()` and `syncMorphState()` to `useMorphTargets` hook — clothing meshes register with the morph system and receive morph updates
+- Added `onClothingMeshesLoaded` callback to `ModelViewer` — notifies when clothing GLBs are loaded so morphs can be synced
+- Removed the runtime 0.008 normal offset push — clothing should now deform with body instead of relying on fixed offsets
+
+### Status
+Blender export running, not yet tested in app.
+
+### Key Insight
+`.mhclo` vertex mappings and `.target` files both use original basemesh vertex indices, so morph deltas can be interpolated onto clothing vertices without any index remapping. The barycentric weights in .mhclo directly reference the same vertex indices used in .target files.
+
+---
+
+
 ## 2026-02-26: Clothing Skin Poke-Through & Shoes Positioning
 
 ### Problem
