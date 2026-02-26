@@ -152,3 +152,40 @@ Strip embedded textures from GLB at load time (`stripEmbeddedTextures()`), load 
 - `bpy.ops.object.shape_key_remove` fails in background mode — use `mesh_obj.shape_key_remove()` data-level API
 - Sparse GLB format: 6MB vs 52MB dense — Three.js supports it natively
 - MPFB2 depsgraph needed to capture exact breast morph deltas (not reconstructible from shape keys alone)
+
+---
+
+## 2026-02-26: Knee tearing fix — delete_verts for lower-body clothing
+
+- **Problem**: Persistent knee tearing at even low morph values (0.15 upperleg-fat). Despite DELTA_SCALE, spatial fallback, and smoothing, body mesh poked through pants at the knees.
+- **Root cause**: Pants had NO delete_verts — full body mesh was visible behind pants. The body mesh deformed more than the clothing mesh at the knee, causing body to show through.
+- **Fix**: Computed delete_verts from vertex mappings for lower-body clothing (pants, boots). Body vertices under clothing are removed. Upper-body clothing (sweaters) excluded to avoid removing neck vertices.
+- **Commit**: b836916
+
+---
+
+## 2026-02-26: Feet below horizon after delete_verts
+
+- **Problem**: After deleting body foot vertices (under boots), the bounding box no longer extended to Y=0. Centering code positioned model too high, making feet float above ground.
+- **Fix**: Added `box.expandByPoint(new THREE.Vector3(0, 0, 0))` to ensure bbox always includes ground level.
+- **Commit**: 4164f7a
+
+---
+
+## 2026-02-26: Invisible neck from sweater delete_verts
+
+- **Problem**: Computing delete_verts from ALL clothing vertex mappings removed neck body vertices — the sweater collar doesn't cover the full neck, so removing those body verts left the neck invisible.
+- **Fix**: Only compute delete_verts for lower-body clothing (pants, boots), not upper-body (sweater, shirts). Upper body clothing uses layered offset only.
+- **Commit**: 0daf00b
+
+---
+
+## 2026-02-26: Clothing switcher — 9 items with UI
+
+- **What**: Added 9 clothing items (3 tops, 3 pants, 3 shoes) with switching UI
+- **Tops**: Sweater, Camisole (low-cut tank), T-Shirt
+- **Pants**: Wool Pants, Harem Pants, Cargo Pants
+- **Shoes**: Ankle Boots, Ballet Flats, Stiletto Booties
+- **Changes**: Updated export_makehuman.py with 9 CLOTHING_ASSETS, created ClothingPanel.tsx UI, updated App.tsx with selection state + dynamic asset loading
+- **delete_verts change**: Switched to only use .mhclo-defined delete_verts (not computed from vertex mappings) to support multiple clothing variants sharing one body mesh
+- **Commit**: 34a4f63
