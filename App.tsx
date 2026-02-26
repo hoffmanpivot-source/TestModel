@@ -1,3 +1,6 @@
+// Must be imported BEFORE any Three.js imports — patches Blob/URL for React Native
+import "./src/utils/blobPolyfill";
+
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -17,7 +20,7 @@ import { ModelViewer } from "./src/components/ModelViewer";
 import { MorphPanel } from "./src/components/MorphPanel";
 import { useMorphTargets } from "./src/hooks/useMorphTargets";
 
-const APP_VERSION = "0.0.21";
+const APP_VERSION = "0.0.22";
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 // Try sparse format directly (6MB vs 52MB dense)
