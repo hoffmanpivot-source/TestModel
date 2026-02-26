@@ -1,7 +1,7 @@
 # TestModel Handoff — Session 2
 
 ## Where We Are
-- **Latest commit**: 644d71f
+- **Latest commit**: 3b7061b
 - **App**: React Native + Expo + Three.js MakeHuman character viewer with morph target sliders
 - **Current work**: Clothing morph target transfer to fix skin poke-through
 
@@ -29,10 +29,12 @@ Several issues found and fixed during testing:
 - Shoes export crash when no morphs pass filter — deferred Basis shape key creation
 - Added max_delta < 0.001 threshold to skip negligible morphs per clothing item
 
-**Current status**: Awaiting visual confirmation in app that clothing morphs work correctly.
+**Current status**: Restored 0.008 normal offset push in ModelViewer.tsx clothing mesh traversal. Clothing now has BOTH offset (prevents z-fighting at rest) AND morph targets (handles deformation). Testing this combined approach.
+
+**CAUTION**: User is frustrated about regressions — be very careful about removing working code. The offset removal was a regression; offset and morphs serve different purposes and both are needed.
 
 **Next steps**:
-1. Visual QA — verify no poke-through, gaps, or artifacts at various morph values
+1. Visual QA — verify clothing sits correctly at default morphs AND deforms properly with sliders
 2. Edge cases — test extreme morph values (breast-size=1.0, weight=1.0)
 3. Fine-tune spatial filtering ranges if other morphs show similar cross-contamination
 ## What Works
@@ -43,9 +45,10 @@ Several issues found and fixed during testing:
 - Morph sliders with collapsible categories
 
 ## Known Issues
-- Morph transfer not yet tested — may need delta scaling or offset adjustments
-- Blender export offset (0.005) still applied — may need removal if morphs handle deformation
+- Morph transfer not yet visually verified — may need delta scaling adjustments
+- Blender export offset (0.005) still applied in addition to runtime offset (0.008) and morph targets
 - Slight skin at midriff between shirt and pants at default morphs
+- **Regression risk**: Do not remove runtime offset — it serves a different purpose than morph targets
 
 ## Key Files
 | File | Purpose |

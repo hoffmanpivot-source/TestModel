@@ -4,6 +4,14 @@ Persistent log of problems, fixes, and failed attempts. Never delete entries.
 
 ---
 
+## 2026-02-26: Clothing not positioned correctly at default morph values
+- **Problem**: After adding morph target transfer to clothing, clothes clipped through body even before any sliders were moved
+- **Root cause**: Runtime normal offset push (0.008) was incorrectly removed from ModelViewer.tsx when adding morph target support. The offset and morphs serve different purposes — offset prevents z-fighting at rest, morphs handle deformation
+- **Fix**: Restored the 0.008 normal offset push in loadClothingGLBs clothing mesh traversal. Clothing now has BOTH offset AND morph targets
+- **Commit**: 3b7061b
+
+---
+
 ## 2026-02-26: Clothing Morph Target Transfer (Poke-Through Attempt)
 
 ### What Was Done
