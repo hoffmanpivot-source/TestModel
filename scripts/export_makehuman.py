@@ -823,7 +823,7 @@ SYSTEM_ASSETS = [
 CLOTHING_CATEGORIES = {
     "tops": [
         ("Sweater",    "toigo_fisherman_sweater/toigo_fisherman_sweater.mhclo"),
-        ("Camisole",   "toigo_camisole_top/toigo_camisole_top.mhclo"),
+        ("TubeTop",    "skalldyrssuppe_tube_top_funky_colors/skalldyrssuppe_tube_top_funky_colors.mhclo"),
         ("TShirt",     "toigo_basic_tucked_t-shirt/toigo_basic_tucked_t-shirt.mhclo"),
     ],
     "pants": [
