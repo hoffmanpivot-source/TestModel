@@ -7,6 +7,8 @@ export function useMorphTargets() {
   const [categories, setCategories] = useState<MorphCategory[]>([]);
   const [morphState, setMorphState] = useState<MorphState>({});
   const meshesRef = useRef<THREE.Mesh[]>([]);
+  const morphStateRef = useRef<MorphState>({});
+  morphStateRef.current = morphState;
 
   /**
    * Scan a loaded GLTF scene for all meshes with morph targets.
@@ -118,10 +120,32 @@ export function useMorphTargets() {
     const alive = meshesRef.current.filter((m) => m.parent !== null);
     meshesRef.current = [...alive, ...morphed];
 
-    // Sync current morph state to new meshes
+    // Apply current morph state to new meshes (read from ref to avoid stale closure)
+    const currentState = morphStateRef.current;
+    const pairSuffixes: [string, string][] = [
+      ["-incr", "-decr"],
+      ["-up", "-down"],
+    ];
     for (const mesh of morphed) {
       if (!mesh.morphTargetDictionary || !mesh.morphTargetInfluences) continue;
       mesh.morphTargetInfluences.fill(0);
+      for (const [targetName, value] of Object.entries(currentState)) {
+        if (value === 0) continue;
+        let applied = false;
+        for (const [posSuffix, negSuffix] of pairSuffixes) {
+          const posName = targetName + posSuffix;
+          const negName = targetName + negSuffix;
+          if (posName in mesh.morphTargetDictionary && negName in mesh.morphTargetDictionary) {
+            mesh.morphTargetInfluences[mesh.morphTargetDictionary[posName]] = Math.max(0, value);
+            mesh.morphTargetInfluences[mesh.morphTargetDictionary[negName]] = Math.max(0, -value);
+            applied = true;
+            break;
+          }
+        }
+        if (!applied && targetName in mesh.morphTargetDictionary) {
+          mesh.morphTargetInfluences[mesh.morphTargetDictionary[targetName]] = value;
+        }
+      }
     }
   }, []);
 
