@@ -240,3 +240,17 @@ Strip embedded textures from GLB at load time (`stripEmbeddedTextures()`), load 
 - **Also noted**: breast-size slider keeps disappearing (user sees 36 targets vs 38). Investigation shows GLB has all 71 targets including breast-size. Issue is likely Metro caching stale GLB — user should clear cache with `npx expo start --clear`
 - **Version**: 0.0.36
 - **Commit**: 42d01f5
+
+---
+
+## 2026-02-26: Keyhole tank straps offset + 'tank' keyword matching
+
+- **Problem**: Keyhole tank top straps (v-neck cutout area) were floating/separating from the body — not deforming with breast morphs
+- **Root cause**: The keyhole tank's .mhclo filename is `toigo_keyhole_tank_top`, but export_makehuman.py's thin-top list only checked for the exact keyword "tank" or specific clothing names. The filename didn't match, so it got the thick-offset (0.008) instead of thin-offset (0.005). With a 0.008 fixed offset and no morph deformation on the straps, they floated away from the breast mesh when sliders moved.
+- **Fix**:
+  1. Added "tank" to the thin-top keyword list in export_makehuman.py (`THIN_TOP_KEYWORDS = ["camisole", "tube", "tank", ...]`)
+  2. Reduced thin-top offset from 0.005 to 0.003 for better body fit on thin tops
+- **Also confirmed**: breast-size slider disappearing was Expo Metro cache issue. After `npx expo start --clear`, all 38 targets visible (including breast-size), no code bug
+- **Added debugging**: Extra logging in ModelViewer.tsx to track morph target counts for future troubleshooting
+- **Version**: 0.0.37
+- **Commit**: 23faf32
