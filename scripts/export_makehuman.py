@@ -1169,10 +1169,29 @@ def export_clothing_items(basemesh, all_morph_deltas=None):
             print(f"  {name}: no obj file found")
             continue
 
-        # Collect delete_verts for body masking (only from .mhclo-defined sections)
+        # Collect delete_verts for body masking.
+        # If .mhclo defines delete_verts, use those. Otherwise, compute them
+        # from vertex mappings — all body vertices referenced by the clothing's
+        # barycentric mappings are "under" the clothing and can be hidden.
+        # This prevents body poke-through at morph transition zones (e.g. knee).
         if delete_verts:
             all_delete_verts.update(delete_verts)
-            print(f"  {name}: {len(delete_verts)} delete_verts collected from .mhclo")
+            print(f"  {name}: {len(delete_verts)} delete_verts from .mhclo")
+        elif vertex_mappings:
+            # Compute delete_verts from vertex mappings
+            computed_dv = set()
+            for mapping in vertex_mappings:
+                if len(mapping) == 1:
+                    computed_dv.add(int(mapping[0]))
+                elif len(mapping) == 9:
+                    v1, v2, v3 = int(mapping[0]), int(mapping[1]), int(mapping[2])
+                    computed_dv.add(v1)
+                    computed_dv.add(v2)
+                    computed_dv.add(v3)
+            # Only include body vertices (indices < 13380), not helper vertices
+            computed_dv = {v for v in computed_dv if v < 13380}
+            all_delete_verts.update(computed_dv)
+            print(f"  {name}: {len(computed_dv)} delete_verts computed from vertex mappings")
 
         # Find texture
         tex_file = None
