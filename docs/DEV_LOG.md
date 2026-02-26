@@ -229,3 +229,14 @@ Strip embedded textures from GLB at load time (`stripEmbeddedTextures()`), load 
 
 - **What**: Replaced camisole clothing item with tube top (skalldyrssuppe_tube_top_funky_colors) because camisole wasn't low-cut enough to test partially exposed breasts with morph targets. Tube top has 1456 vertices, 21 morph targets transferred, 0.005 thin top offset. Updated export_makehuman.py CLOTHING_CATEGORIES (Camisole → TubeTop), App.tsx references (camisole → tubetop), removed old camisole.glb and camisole_diffuse.png, re-exported all 9 clothing items + body mesh. Version 0.0.35.
 - **Commit**: b5bbd7e
+
+---
+
+## 2026-02-26: Replace tube top with keyhole tank top for V-neck cleavage testing
+
+- **Problem**: User said tube top was NOT low-cut — wanted a V-neck shape showing inner sides of breasts, not just a straight-across top
+- **Fix**: Replaced tube top with keyhole tank top (toigo_keyhole_tank_top) which has a V/keyhole cutout at the chest
+- **Details**: Keyhole tank has 726 verts, 31 morph targets transferred, 0.008 normal offset. Has 881 delete_verts from its .mhclo, but tops category intersection is empty (sweater has 0) so no body verts removed for tops
+- **Also noted**: breast-size slider keeps disappearing (user sees 36 targets vs 38). Investigation shows GLB has all 71 targets including breast-size. Issue is likely Metro caching stale GLB — user should clear cache with `npx expo start --clear`
+- **Version**: 0.0.36
+- **Commit**: 42d01f5
