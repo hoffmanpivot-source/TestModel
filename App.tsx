@@ -18,7 +18,7 @@ import { MorphPanel } from "./src/components/MorphPanel";
 import { ClothingPanel } from "./src/components/ClothingPanel";
 import { useMorphTargets } from "./src/hooks/useMorphTargets";
 
-const APP_VERSION = "0.0.33";
+const APP_VERSION = "0.0.34";
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const MODEL_ASSET = require("./assets/models/makehuman_base.glb");
