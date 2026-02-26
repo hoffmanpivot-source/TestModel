@@ -1265,8 +1265,8 @@ def export_clothing_items(basemesh, all_morph_deltas=None):
             name_lower = name.lower()
             if any(kw in name_lower for kw in ("sweater", "jacket")):
                 offset_amount = 0.020  # thick outer layer — must clear pants waistband
-            elif any(kw in name_lower for kw in ("camisole", "shirt", "top", "blouse")):
-                offset_amount = 0.005  # thin tops — close to body
+            elif any(kw in name_lower for kw in ("camisole", "shirt", "top", "blouse", "tank")):
+                offset_amount = 0.003  # thin tops / tanks — close to body
             elif any(kw in name_lower for kw in ("boot", "shoe", "flat", "bootie")):
                 offset_amount = 0.010  # footwear
             elif "cargo" in name_lower:

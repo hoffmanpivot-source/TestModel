@@ -246,11 +246,15 @@ export function ModelViewer({ modelUri, clothingItems, onModelLoaded, onClothing
                 if (child instanceof THREE.Mesh) {
                   if (child.morphTargetDictionary) {
                     const names = Object.keys(child.morphTargetDictionary);
+                    const morphPosCount = child.geometry.morphAttributes?.position?.length ?? 0;
                     console.log(
-                      `[ModelViewer] Mesh "${child.name}" has ${names.length} morph targets:`,
+                      `[ModelViewer] Mesh "${child.name}" has ${names.length} morph targets (morphAttrs.position: ${morphPosCount}, influences: ${child.morphTargetInfluences?.length ?? 0}):`,
                       names.slice(0, 10).join(", "),
                       names.length > 10 ? "..." : ""
                     );
+                    // Log which breast targets are present
+                    const breastTargets = names.filter(n => n.includes('breast'));
+                    console.log(`[ModelViewer] Breast targets (${breastTargets.length}): ${breastTargets.join(', ')}`);
                     morphCount += names.length;
                     // Debug: log current morph influences
                     console.log(
