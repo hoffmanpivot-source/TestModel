@@ -26,9 +26,15 @@ interface ClothingItem {
   texUri: string;
 }
 
+interface AnimationDef {
+  id: string;
+  glbUri: string;
+}
+
 interface Props {
   modelUri: string | null;
   clothingItems?: ClothingItem[];
+  currentAnimation?: AnimationDef | null;
   onModelLoaded: (scene: THREE.Group) => void;
   onClothingMeshesLoaded?: (meshes: THREE.Mesh[]) => void;
   onError: (error: string) => void;
@@ -45,7 +51,7 @@ interface OrbitState {
   targetZ: number;
 }
 
-export function ModelViewer({ modelUri, clothingItems, onModelLoaded, onClothingMeshesLoaded, onError, version }: Props) {
+export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModelLoaded, onClothingMeshesLoaded, onError, version }: Props) {
   const rendererRef = useRef<Renderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
@@ -56,6 +62,13 @@ export function ModelViewer({ modelUri, clothingItems, onModelLoaded, onClothing
   const loadedUriRef = useRef<string | null>(null);
   const clothingGroupRef = useRef<THREE.Group | null>(null);
   const loadedClothingRef = useRef<ClothingItem[]>([]);
+
+  // Animation state
+  const mixerRef = useRef<THREE.AnimationMixer | null>(null);
+  const clockRef = useRef(new THREE.Clock());
+  const currentActionRef = useRef<THREE.AnimationAction | null>(null);
+  const animClipsRef = useRef<Map<string, THREE.AnimationClip>>(new Map());
+  const currentAnimIdRef = useRef<string | null>(null);
 
   // Camera orbit state
   const orbitRef = useRef<OrbitState>({
@@ -382,6 +395,12 @@ export function ModelViewer({ modelUri, clothingItems, onModelLoaded, onClothing
               scene.add(model);
               modelRef.current = model;
 
+              // Create AnimationMixer for skeletal animation
+              const mixer = new THREE.AnimationMixer(model);
+              mixerRef.current = mixer;
+              clockRef.current = new THREE.Clock(); // Reset clock
+              console.log("[ModelViewer] AnimationMixer created");
+
               console.log(`[ModelViewer] Model transform: pos(${model.position.x.toFixed(4)},${model.position.y.toFixed(4)},${model.position.z.toFixed(4)}) scale(${model.scale.x.toFixed(4)})`);
               console.log(`[ModelViewer] Body bbox: min(${box.min.x.toFixed(4)},${box.min.y.toFixed(4)},${box.min.z.toFixed(4)}) max(${box.max.x.toFixed(4)},${box.max.y.toFixed(4)},${box.max.z.toFixed(4)})`);
 
@@ -534,6 +553,77 @@ export function ModelViewer({ modelUri, clothingItems, onModelLoaded, onClothing
     }
   }, [clothingItems, loadClothingGLBs]);
 
+  // Load and play/stop animation when currentAnimation changes
+  useEffect(() => {
+    const mixer = mixerRef.current;
+    if (!mixer) return;
+
+    // Stop animation
+    if (!currentAnimation) {
+      if (currentActionRef.current) {
+        currentActionRef.current.fadeOut(0.3);
+        currentActionRef.current = null;
+        currentAnimIdRef.current = null;
+        console.log("[ModelViewer] Animation stopped");
+      }
+      return;
+    }
+
+    // Same animation already playing
+    if (currentAnimIdRef.current === currentAnimation.id) return;
+
+    const playClip = (clip: THREE.AnimationClip) => {
+      const newAction = mixer.clipAction(clip);
+      if (currentActionRef.current) {
+        // Crossfade from current to new
+        newAction.reset().play();
+        currentActionRef.current.crossFadeTo(newAction, 0.3, true);
+      } else {
+        newAction.reset().play();
+      }
+      currentActionRef.current = newAction;
+      currentAnimIdRef.current = currentAnimation.id;
+      console.log(`[ModelViewer] Playing animation: ${currentAnimation.id}`);
+    };
+
+    // Check cache first
+    const cached = animClipsRef.current.get(currentAnimation.id);
+    if (cached) {
+      playClip(cached);
+      return;
+    }
+
+    // Load animation GLB
+    console.log(`[ModelViewer] Loading animation: ${currentAnimation.id}`);
+    fetch(currentAnimation.glbUri)
+      .then((res) => res.arrayBuffer())
+      .then((buffer) => {
+        const loader = new GLTFLoader();
+        loader.parse(
+          buffer,
+          "",
+          (gltf) => {
+            if (gltf.animations.length > 0) {
+              const clip = gltf.animations[0];
+              animClipsRef.current.set(currentAnimation.id, clip);
+              console.log(`[ModelViewer] Animation loaded: ${currentAnimation.id} (${clip.duration.toFixed(1)}s, ${clip.tracks.length} tracks)`);
+              // Only play if still the requested animation
+              if (currentAnimation.id === currentAnimIdRef.current) return;
+              playClip(clip);
+            } else {
+              console.warn(`[ModelViewer] No animations found in ${currentAnimation.id}.glb`);
+            }
+          },
+          (err) => {
+            console.warn(`[ModelViewer] Animation parse error: ${err}`);
+          }
+        );
+      })
+      .catch((err) => {
+        console.warn(`[ModelViewer] Animation fetch error: ${err}`);
+      });
+  }, [currentAnimation]);
+
   const onContextCreate = useCallback(
     (gl: ExpoWebGLRenderingContext) => {
       glRef.current = gl;
@@ -588,6 +678,11 @@ export function ModelViewer({ modelUri, clothingItems, onModelLoaded, onClothing
       // Animation loop
       const animate = () => {
         animRef.current = requestAnimationFrame(animate);
+        // Update skeletal animation mixer
+        if (mixerRef.current) {
+          const delta = clockRef.current.getDelta();
+          mixerRef.current.update(delta);
+        }
         renderer.render(scene, camera);
         gl.endFrameEXP();
       };

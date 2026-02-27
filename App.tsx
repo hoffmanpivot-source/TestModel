@@ -16,9 +16,10 @@ import * as THREE from "three";
 import { ModelViewer } from "./src/components/ModelViewer";
 import { MorphPanel } from "./src/components/MorphPanel";
 import { ClothingPanel } from "./src/components/ClothingPanel";
+import { AnimationPanel } from "./src/components/AnimationPanel";
 import { useMorphTargets } from "./src/hooks/useMorphTargets";
 
-const APP_VERSION = "0.0.39";
+const APP_VERSION = "0.0.40";
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const MODEL_ASSET = require("./assets/models/makehuman_base.glb");
@@ -48,6 +49,22 @@ const ALL_CLOTHING = {
   ] as ClothingVariant[],
 };
 
+// Animation definitions — add entries as you export from Mixamo
+// Each needs a GLB file in assets/models/animations/
+// Start with an empty list; populated after Mixamo download + export
+interface AnimOption {
+  id: string;
+  label: string;
+  glb: number; // require() asset
+}
+const ANIMATION_LIST: AnimOption[] = [
+  { id: "wave", label: "Wave", glb: require("./assets/models/animations/wave.glb") },
+  // { id: "idle", label: "Idle", glb: require("./assets/models/animations/idle.glb") },
+  // { id: "cheer", label: "Cheer", glb: require("./assets/models/animations/cheer.glb") },
+  // { id: "dance", label: "Dance", glb: require("./assets/models/animations/dance.glb") },
+  // { id: "walk", label: "Walk", glb: require("./assets/models/animations/walk.glb") },
+];
+
 const DEV_SCREENSHOT_URL = "http://10.1.1.19:8766/screenshot";
 
 export default function App() {
@@ -59,6 +76,9 @@ export default function App() {
   const [selectedPants, setSelectedPants] = useState("pants");
   const [selectedShoes, setSelectedShoes] = useState("boots");
   const [clothingLoading, setClothingLoading] = useState(false);
+  const [currentAnimation, setCurrentAnimation] = useState<string | null>(null);
+  const [animationLoading, setAnimationLoading] = useState(false);
+  const [animationDef, setAnimationDef] = useState<{ id: string; glbUri: string } | null>(null);
   const {
     categories,
     morphState,
@@ -236,6 +256,33 @@ export default function App() {
     );
   }, [buildMeta]);
 
+  // Handle animation selection
+  const handleAnimationSelect = useCallback(async (animId: string | null) => {
+    if (!animId) {
+      setCurrentAnimation(null);
+      setAnimationDef(null);
+      return;
+    }
+
+    const anim = ANIMATION_LIST.find((a) => a.id === animId);
+    if (!anim) return;
+
+    setCurrentAnimation(animId);
+    setAnimationLoading(true);
+
+    try {
+      const asset = Asset.fromModule(anim.glb);
+      await asset.downloadAsync();
+      if (asset.localUri) {
+        setAnimationDef({ id: animId, glbUri: asset.localUri });
+        console.log(`[App] Animation asset ready: ${animId} → ${asset.localUri}`);
+      }
+    } catch (err) {
+      console.warn(`[App] Failed to load animation asset: ${animId}`, err);
+    }
+    setAnimationLoading(false);
+  }, []);
+
   if (!assetReady) {
     return (
       <SafeAreaView style={styles.container}>
@@ -257,6 +304,7 @@ export default function App() {
         <ModelViewer
           modelUri={modelUri}
           clothingItems={clothingItems}
+          currentAnimation={animationDef}
           onModelLoaded={handleModelLoaded}
           onClothingMeshesLoaded={handleClothingMeshesLoaded}
           onError={handleError}
@@ -290,6 +338,14 @@ export default function App() {
         onSelectTop={setSelectedTop}
         onSelectPants={setSelectedPants}
         onSelectShoes={setSelectedShoes}
+      />
+
+      {/* Animation selector */}
+      <AnimationPanel
+        animations={ANIMATION_LIST}
+        currentAnimation={currentAnimation}
+        onSelect={handleAnimationSelect}
+        loading={animationLoading}
       />
 
       {/* Morph Target Panel — bottom */}
