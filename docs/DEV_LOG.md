@@ -4,6 +4,19 @@ Persistent log of problems, fixes, and failed attempts. Never delete entries.
 
 ---
 
+## 2026-02-27: Switched to Mixamo auto-rigged skeleton (v0.0.48)
+
+- **Problem**: Per-bone rest-pose correction (v0.0.46) applied all known retargeting techniques but arms still played behind body. MPFB2's built-in Mixamo rig has rest poses differing by up to 163° from Mixamo's standard exported FBX skeleton, making JS/Blender correction impossible.
+- **Root cause**: MPFB2 `mixamorig:` rig is a custom implementation. While it matches Mixamo's bone names, the rest poses were authored differently. No amount of delta-based retargeting could fix absolute orientation differences of this magnitude.
+- **Solution**: Export neutral body mesh → upload to mixamo.com for auto-rigging → download rigged FBX with Mixamo's standard skeleton → merge skeleton with morph targets in Blender → export GLB. This ensures body skeleton IS the Mixamo skeleton (not a reimplementation).
+- **New scripts**:
+  - `scripts/export_for_mixamo.py` — exports body mesh without skeleton for Mixamo upload
+  - `scripts/export_makehuman_mixamo.py` — merges Mixamo FBX skeleton with MPFB2 morph targets + clothing
+- **Process**: Body GLB → FBX (no skeleton) → upload to Mixamo → download rigged FBX → import into Blender with body morphs → export final GLB with Mixamo skeleton + morphs
+- **Status**: Implemented, needs testing in app to verify animations play correctly. If successful, retire old retargeting scripts (approaches 1-7 in dev log).
+
+---
+
 ## 2026-02-27: Per-bone rest-pose correction (v0.0.46)
 
 - **What**: Extended rest-pose correction from Hips only (v0.0.45) to ALL bones
