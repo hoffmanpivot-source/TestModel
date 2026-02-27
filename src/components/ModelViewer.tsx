@@ -707,57 +707,9 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
               return true;
             });
 
-            // Step 2: Per-bone rest-pose correction.
-            // MPFB2 body skeleton has different rest orientations than Mixamo animation skeleton.
-            // For each bone: correction = bodyRest * animRest^-1, pre-multiplied into keyframes.
-
-            // Use saved rest quaternions (captured at load time, BEFORE any animation plays).
-            // Reading bone.quaternion during animation gives animated values, not rest!
-            const savedBodyRests = bodyRestQuatsRef.current;
-
-            // Build map of animation bone rest quaternions from GLB scene nodes.
-            // Node names have colons (mixamorig:Hips) but track names are sanitized
-            // (mixamorigHips) by Three.js PropertyBinding. Index by sanitized name.
-            const animBoneRests = new Map<string, THREE.Quaternion>();
-            gltf.scene.traverse((node: any) => {
-              if (node.name) {
-                const sanitized = node.name.replace(/:/g, '');
-                animBoneRests.set(sanitized, node.quaternion.clone());
-              }
-            });
-
-            // Apply per-bone correction to all quaternion tracks
-            let correctedCount = 0;
-            const tempQ = new THREE.Quaternion();
-            for (const track of retargetedClip.tracks) {
-              if (!track.name.endsWith('.quaternion')) continue;
-              const boneName = track.name.replace('.quaternion', '');
-
-              const bodyRest = savedBodyRests[boneName];
-              const animRest = animBoneRests.get(boneName);
-              if (!bodyRest || !animRest) continue;
-
-              const correction = bodyRest.clone().multiply(animRest.clone().invert());
-
-              // Skip if correction is identity (rest poses match)
-              const isIdentity = Math.abs(correction.x) < 0.001 && Math.abs(correction.y) < 0.001 &&
-                                  Math.abs(correction.z) < 0.001 && Math.abs(correction.w - 1) < 0.001;
-              if (isIdentity) continue;
-
-              const v = track.values;
-              for (let i = 0; i < v.length; i += 4) {
-                tempQ.set(v[i], v[i + 1], v[i + 2], v[i + 3]);
-                tempQ.premultiply(correction);
-                v[i] = tempQ.x; v[i + 1] = tempQ.y; v[i + 2] = tempQ.z; v[i + 3] = tempQ.w;
-              }
-              correctedCount++;
-
-              // Log key bones
-              if (boneName.includes('Hips') || boneName.includes('LeftArm')) {
-                console.log(`[ModelViewer] Correction for ${boneName}: body=[${bodyRest.x.toFixed(4)},${bodyRest.y.toFixed(4)},${bodyRest.z.toFixed(4)},${bodyRest.w.toFixed(4)}] anim=[${animRest.x.toFixed(4)},${animRest.y.toFixed(4)},${animRest.z.toFixed(4)},${animRest.w.toFixed(4)}]`);
-              }
-            }
-            console.log(`[ModelViewer] Applied rest-pose corrections to ${correctedCount} bones`);
+            // No per-bone correction needed — body and animation both use Mixamo skeleton.
+            // Small rest-pose differences (~4°) from Mixamo auto-rigging are negligible.
+            // (ReactAvatar also uses no correction besides optional Hips adjustment.)
 
             console.log(`[ModelViewer] Animation "${currentAnimation.id}": ${retargetedClip.tracks.length}/${origTrackCount} tracks, ${retargetedClip.duration.toFixed(1)}s`);
 
