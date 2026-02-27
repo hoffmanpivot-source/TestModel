@@ -287,12 +287,18 @@ def export_animation(anim_name, fbx_filename):
         bpy.data.objects.remove(mesh_obj, do_unlink=True)
     bpy.data.objects.remove(src_armature, do_unlink=True)
 
-    # Rename the baked action
+    # Rename the baked action and remove ALL other actions
+    # (prevents stale FBX actions from ending up in the GLB)
     if body_armature.animation_data and body_armature.animation_data.action:
-        body_armature.animation_data.action.name = anim_name
-        act = body_armature.animation_data.action
-        if hasattr(act, 'slots') and act.slots:
-            body_armature.animation_data.action_slot = act.slots[0]
+        keep_action = body_armature.animation_data.action
+        keep_action.name = anim_name
+        if hasattr(keep_action, 'slots') and keep_action.slots:
+            body_armature.animation_data.action_slot = keep_action.slots[0]
+        # Remove all other actions
+        for action in list(bpy.data.actions):
+            if action != keep_action:
+                print(f"  Removing stale action: {action.name}")
+                bpy.data.actions.remove(action)
     else:
         print("  ERROR: No baked action found")
         return False
