@@ -95,7 +95,11 @@ CURATED_TARGETS = [
     "breast/breast-trans-down",
     "breast/breast-volume-vert-up",
     "breast/breast-volume-vert-down",
-    # NOTE: breast-size/firmness created as composites in create_composite_breast_morphs()
+    # Breast-size/firmness from .target files (female-young-averagemuscle-averageweight variant)
+    "breast/female-young-averagemuscle-averageweight-maxcup-averagefirmness",
+    "breast/female-young-averagemuscle-averageweight-mincup-averagefirmness",
+    "breast/female-young-averagemuscle-averageweight-averagecup-maxfirmness",
+    "breast/female-young-averagemuscle-averageweight-averagecup-minfirmness",
 ]
 
 # Symmetric targets: merge r- and l- variants into a single shape key.
@@ -1141,7 +1145,7 @@ def load_system_assets(basemesh):
     return loaded
 
 
-def export_clothing_items(basemesh, all_morph_deltas=None):
+def export_clothing_items(basemesh, all_morph_deltas=None, armature_object=None):
     """Export each clothing item as a separate GLB, fitted to the basemesh.
 
     Must be called while basemesh still has full vertex set (before helper removal).
@@ -1264,6 +1268,25 @@ def export_clothing_items(basemesh, all_morph_deltas=None):
             mesh_data.update()
             print(f"  {name}: pushed {len(mesh_data.vertices)} vertices outward by {offset_amount}")
 
+            # Transfer bone weights from body to clothing for skeletal animation
+            if armature_object:
+                asset_obj.parent = armature_object
+                asset_obj.parent_type = 'OBJECT'
+                # Use Data Transfer modifier for weight transfer
+                dt_mod = asset_obj.modifiers.new("DataTransfer", 'DATA_TRANSFER')
+                dt_mod.object = basemesh
+                dt_mod.use_vert_data = True
+                dt_mod.data_types_verts = {'VGROUP_WEIGHTS'}
+                dt_mod.vert_mapping = 'POLYINTERP_NEAREST'
+                bpy.context.view_layer.objects.active = asset_obj
+                bpy.ops.object.datalayout_transfer(modifier=dt_mod.name)
+                bpy.ops.object.modifier_apply(modifier=dt_mod.name)
+                # Add armature modifier
+                arm_mod = asset_obj.modifiers.new("Armature", 'ARMATURE')
+                arm_mod.object = armature_object
+                vg_count = len(asset_obj.vertex_groups)
+                print(f"  {name}: transferred {vg_count} bone weight groups from body")
+
             # Transfer morph targets from body to clothing via barycentric interpolation
             has_morphs = False
             if all_morph_deltas and vertex_mappings:
@@ -1275,6 +1298,14 @@ def export_clothing_items(basemesh, all_morph_deltas=None):
             # export_apply=True strips shape keys, so we must bake manually.
             if has_morphs:
                 import numpy as np
+
+                # Temporarily remove Armature modifier for subdivision bake
+                saved_arm_obj = None
+                for m in list(asset_obj.modifiers):
+                    if m.type == 'ARMATURE':
+                        saved_arm_obj = m.object
+                        asset_obj.modifiers.remove(m)
+                        break
 
                 subsurf = asset_obj.modifiers.new(name="Subdivision", type='SUBSURF')
                 subsurf.levels = 1
@@ -1334,16 +1365,33 @@ def export_clothing_items(basemesh, all_morph_deltas=None):
                             sk.data[vi].co.y = asset_obj.data.vertices[vi].co.y + deltas_r[vi][1]
                             sk.data[vi].co.z = asset_obj.data.vertices[vi].co.z + deltas_r[vi][2]
                     sk.value = 0.0
+
+                # Re-add Armature modifier after subdivision
+                if saved_arm_obj:
+                    arm_mod = asset_obj.modifiers.new("Armature", 'ARMATURE')
+                    arm_mod.object = saved_arm_obj
             else:
                 # No morphs — just add SubSurf and apply directly
+                # Temporarily remove Armature modifier for subdivision
+                saved_arm_obj_nm = None
+                for m in list(asset_obj.modifiers):
+                    if m.type == 'ARMATURE':
+                        saved_arm_obj_nm = m.object
+                        asset_obj.modifiers.remove(m)
+                        break
                 subsurf = asset_obj.modifiers.new(name="Subdivision", type='SUBSURF')
                 subsurf.levels = 1
                 subsurf.render_levels = 1
                 bpy.ops.object.modifier_apply(modifier="Subdivision")
+                if saved_arm_obj_nm:
+                    arm_mod = asset_obj.modifiers.new("Armature", 'ARMATURE')
+                    arm_mod.object = saved_arm_obj_nm
 
-            # Select ONLY this object for export
+            # Select this object (+ armature if present) for export
             bpy.ops.object.select_all(action='DESELECT')
             asset_obj.select_set(True)
+            if armature_object:
+                armature_object.select_set(True)
 
             # Export as individual GLB (modifiers already applied, shape keys preserved)
             out_path = os.path.join(output_dir, f"{name.lower()}.glb")
@@ -1355,6 +1403,7 @@ def export_clothing_items(basemesh, all_morph_deltas=None):
                 export_morph=has_morphs,
                 export_morph_normal=False,
                 export_morph_tangent=False,
+                export_skins=armature_object is not None,
                 export_yup=True,
             )
 
@@ -1474,8 +1523,10 @@ def main():
 
     # Create base human
     basemesh = None
+    HumanService = None
     try:
-        from mpfb.services.humanservice import HumanService
+        # Blender 5.0 extensions use bl_ext namespace
+        from bl_ext.blender_org.mpfb.services.humanservice import HumanService
         print("Creating base human via HumanService...")
         basemesh = HumanService.create_human(
             mask_helpers=True,
@@ -1502,9 +1553,25 @@ def main():
 
     print(f"Base mesh: {basemesh.name}, vertices: {len(basemesh.data.vertices)}")
 
+    # STEP 0-rig: Add Mixamo skeleton rig
+    print("\nStep 0-rig: Adding Mixamo skeleton rig...")
+    armature_object = None
+    if HumanService:
+        try:
+            armature_object = HumanService.add_builtin_rig(basemesh, "mixamo", import_weights=True)
+            if armature_object:
+                print(f"  Armature: {armature_object.name}, bones: {len(armature_object.data.bones)}")
+            else:
+                print("  WARNING: add_builtin_rig returned None")
+        except Exception as e:
+            print(f"  WARNING: Failed to add rig: {e}")
+            import traceback
+            traceback.print_exc()
+    else:
+        print("  SKIPPED: HumanService not available")
+
     # STEP 0a: Capture breast deltas from MPFB2's parametric system BEFORE removing keys.
-    # This uses depsgraph to get the EXACT vertex positions MakeHuman computes,
-    # rather than guessing at scale factors for raw .target files.
+    # This reads shape key vertex data directly (no depsgraph).
     print("\nStep 0a: Capturing breast morphs from MPFB2 parametric system...")
     breast_deltas = capture_breast_deltas_from_mpfb2(basemesh)
 
@@ -1513,6 +1580,23 @@ def main():
     print("\nStep 0b: Loading system assets...")
     system_assets = load_system_assets(basemesh)
     print(f"  Loaded {len(system_assets)} system assets")
+
+    # Parent system assets to armature so they follow head bone
+    if armature_object and system_assets:
+        print("  Parenting system assets to armature (Head bone)...")
+        for asset_obj in system_assets:
+            asset_obj.parent = armature_object
+            asset_obj.parent_type = 'OBJECT'
+            # Add armature modifier
+            mod = asset_obj.modifiers.new("Armature", 'ARMATURE')
+            mod.object = armature_object
+            # Assign all vertices to Head bone with weight 1.0
+            head_vg = asset_obj.vertex_groups.get("mixamorig:Head")
+            if not head_vg:
+                head_vg = asset_obj.vertex_groups.new(name="mixamorig:Head")
+            all_vert_indices = list(range(len(asset_obj.data.vertices)))
+            head_vg.add(all_vert_indices, 1.0, 'REPLACE')
+            print(f"    {asset_obj.name}: {len(all_vert_indices)} verts -> mixamorig:Head")
 
     # STEP 0b2: Collect morph target deltas for clothing transfer
     # Must happen before clothing export. Uses ORIGINAL vertex indices (same as .mhclo mappings).
@@ -1527,7 +1611,7 @@ def main():
     # STEP 0b3: Export clothing items as separate GLBs WITH morph targets
     # Must happen while basemesh still has full vertex set for mhclo fitting
     print("\nStep 0b3: Exporting clothing items with morph targets...")
-    clothing_exported, clothing_delete_verts = export_clothing_items(basemesh, all_morph_deltas)
+    clothing_exported, clothing_delete_verts = export_clothing_items(basemesh, all_morph_deltas, armature_object)
     print(f"  Exported {len(clothing_exported)} clothing items: {', '.join(clothing_exported)}")
     print(f"  Total delete_verts from clothing: {len(clothing_delete_verts)}")
 
@@ -1620,6 +1704,16 @@ def main():
     bpy.context.view_layer.objects.active = basemesh
     basemesh.select_set(True)
 
+    # Temporarily remove Armature modifier — vertex groups (bone weights) persist
+    # on mesh data regardless. We'll re-add it after subdivision is applied.
+    saved_armature_obj = None
+    for m in list(basemesh.modifiers):
+        if m.type == 'ARMATURE':
+            saved_armature_obj = m.object
+            basemesh.modifiers.remove(m)
+            print("  Temporarily removed Armature modifier for subdivision bake")
+            break
+
     subsurf = basemesh.modifiers.new(name="Subdivision", type='SUBSURF')
     subsurf.levels = 1
     subsurf.render_levels = 1
@@ -1687,6 +1781,12 @@ def main():
 
     print(f"  Rebuilt {len(sk_data)} shape keys on subdivided mesh")
 
+    # Re-add Armature modifier after subdivision bake
+    if saved_armature_obj:
+        mod = basemesh.modifiers.new(name="Armature", type='ARMATURE')
+        mod.object = saved_armature_obj
+        print("  Re-added Armature modifier after subdivision bake")
+
     # STEP 6: Smooth normals for better appearance
     for obj in [basemesh] + system_assets:
         bpy.context.view_layer.objects.active = obj
@@ -1705,6 +1805,8 @@ def main():
         export_morph=True,
         export_morph_normal=False,
         export_morph_tangent=False,
+        export_skins=armature_object is not None,
+        export_animations=False,
         export_yup=True,
     )
 
