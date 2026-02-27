@@ -4,6 +4,15 @@ Persistent log of problems, fixes, and failed attempts. Never delete entries.
 
 ---
 
+## 2026-02-27: Stale FBX action causing wrong animation playback
+
+- **Problem**: GLBs exported by `export_animations_retargeted.py` contained TWO animations — the stale FBX action `Armature|mixamo.com|Layer0` at index 0, and the correct retargeted action at index 1. `gltf.animations[0]` picked the wrong (un-retargeted) animation, so approach 7 values were never actually tested in the app.
+- **Root cause**: When importing an FBX into Blender, the FBX action persists on the armature. The retargeting script created a new action but never removed the old one. GLTF export included both, with the stale one first.
+- **Fix**: Added stale action cleanup in `export_animations_retargeted.py` — removes all actions except the retargeted one before export.
+- **Status**: Fix exported, needs testing. Approach 7 (world-space delta retargeting) values were never actually tested in the app due to this bug.
+
+---
+
 ## 2026-02-27: Skeletal animation — Mixamo rig + FBX animation pipeline
 
 ### Phase 1: Add skeleton to body GLB
