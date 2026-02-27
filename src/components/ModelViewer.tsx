@@ -707,59 +707,63 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
               return true;
             });
 
-            // Step 2: Hips rest-pose correction.
-            // Animation and body skeletons may have different Hips rest rotations.
-            // Compute delta and pre-multiply into all Hips keyframes.
+            // Step 2: Per-bone rest-pose correction.
+            // MPFB2 body skeleton has different rest orientations than Mixamo animation skeleton.
+            // For each bone: correction = bodyRest * animRest^-1, pre-multiplied into keyframes.
             const model = modelRef.current;
-            let bodyHipsBone: THREE.Bone | null = null;
+
+            // Build map of body bone rest quaternions
+            const bodyBoneRests = new Map<string, THREE.Quaternion>();
             if (model) {
               model.traverse((child: any) => {
                 if (child instanceof THREE.SkinnedMesh && child.skeleton) {
                   for (const bone of child.skeleton.bones) {
-                    if (bone.name.toLowerCase().includes('hips')) {
-                      bodyHipsBone = bone;
-                    }
+                    bodyBoneRests.set(bone.name, bone.quaternion.clone());
                   }
                 }
               });
             }
 
-            if (bodyHipsBone) {
-              // Find animation's Hips rest pose from the GLB scene nodes
-              let animHipsRest = new THREE.Quaternion();
-              gltf.scene.traverse((node: any) => {
-                if (node.name && node.name.toLowerCase().includes('hips')) {
-                  animHipsRest.copy(node.quaternion);
-                }
-              });
+            // Build map of animation bone rest quaternions from GLB scene nodes
+            const animBoneRests = new Map<string, THREE.Quaternion>();
+            gltf.scene.traverse((node: any) => {
+              if (node.name) {
+                animBoneRests.set(node.name, node.quaternion.clone());
+              }
+            });
 
-              const templateHipsRest = (bodyHipsBone as THREE.Bone).quaternion.clone();
-              const correction = templateHipsRest.clone().multiply(animHipsRest.clone().invert());
+            // Apply per-bone correction to all quaternion tracks
+            let correctedCount = 0;
+            const tempQ = new THREE.Quaternion();
+            for (const track of retargetedClip.tracks) {
+              if (!track.name.endsWith('.quaternion')) continue;
+              const boneName = track.name.replace('.quaternion', '');
 
-              const isIdentity = Math.abs(correction.x) < 0.01 && Math.abs(correction.y) < 0.01 &&
-                                  Math.abs(correction.z) < 0.01 && Math.abs(correction.w - 1) < 0.01;
+              const bodyRest = bodyBoneRests.get(boneName);
+              const animRest = animBoneRests.get(boneName);
+              if (!bodyRest || !animRest) continue;
 
-              console.log(`[ModelViewer] Hips correction: identity=${isIdentity} correction=[${correction.x.toFixed(4)},${correction.y.toFixed(4)},${correction.z.toFixed(4)},${correction.w.toFixed(4)}]`);
-              console.log(`[ModelViewer]   templateHipsRest=[${templateHipsRest.x.toFixed(4)},${templateHipsRest.y.toFixed(4)},${templateHipsRest.z.toFixed(4)},${templateHipsRest.w.toFixed(4)}]`);
-              console.log(`[ModelViewer]   animHipsRest=[${animHipsRest.x.toFixed(4)},${animHipsRest.y.toFixed(4)},${animHipsRest.z.toFixed(4)},${animHipsRest.w.toFixed(4)}]`);
+              const correction = bodyRest.clone().multiply(animRest.clone().invert());
 
-              if (!isIdentity) {
-                // Find Hips track
-                const hipsTrack = retargetedClip.tracks.find(t =>
-                  t.name.toLowerCase().includes('hips') && t.name.endsWith('.quaternion')
-                );
-                if (hipsTrack) {
-                  const v = hipsTrack.values;
-                  const tempQ = new THREE.Quaternion();
-                  for (let i = 0; i < v.length; i += 4) {
-                    tempQ.set(v[i], v[i + 1], v[i + 2], v[i + 3]);
-                    tempQ.premultiply(correction);
-                    v[i] = tempQ.x; v[i + 1] = tempQ.y; v[i + 2] = tempQ.z; v[i + 3] = tempQ.w;
-                  }
-                  console.log(`[ModelViewer] Applied Hips correction to ${v.length / 4} keyframes`);
-                }
+              // Skip if correction is identity (rest poses match)
+              const isIdentity = Math.abs(correction.x) < 0.001 && Math.abs(correction.y) < 0.001 &&
+                                  Math.abs(correction.z) < 0.001 && Math.abs(correction.w - 1) < 0.001;
+              if (isIdentity) continue;
+
+              const v = track.values;
+              for (let i = 0; i < v.length; i += 4) {
+                tempQ.set(v[i], v[i + 1], v[i + 2], v[i + 3]);
+                tempQ.premultiply(correction);
+                v[i] = tempQ.x; v[i + 1] = tempQ.y; v[i + 2] = tempQ.z; v[i + 3] = tempQ.w;
+              }
+              correctedCount++;
+
+              // Log key bones
+              if (boneName.includes('Hips') || boneName.includes('LeftArm')) {
+                console.log(`[ModelViewer] Correction for ${boneName}: body=[${bodyRest.x.toFixed(4)},${bodyRest.y.toFixed(4)},${bodyRest.z.toFixed(4)},${bodyRest.w.toFixed(4)}] anim=[${animRest.x.toFixed(4)},${animRest.y.toFixed(4)},${animRest.z.toFixed(4)},${animRest.w.toFixed(4)}]`);
               }
             }
+            console.log(`[ModelViewer] Applied rest-pose corrections to ${correctedCount} bones`);
 
             console.log(`[ModelViewer] Animation "${currentAnimation.id}": ${retargetedClip.tracks.length}/${origTrackCount} tracks, ${retargetedClip.duration.toFixed(1)}s`);
 
