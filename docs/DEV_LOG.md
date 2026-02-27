@@ -4,6 +4,16 @@ Persistent log of problems, fixes, and failed attempts. Never delete entries.
 
 ---
 
+## 2026-02-27: Per-bone rest-pose correction (v0.0.46)
+
+- **What**: Extended rest-pose correction from Hips only (v0.0.45) to ALL bones
+- **Problem**: v0.0.45 only corrected Hips. MPFB2 body has different rest orientations for ALL bones vs Mixamo animation skeleton (~7° difference for arms, different rotations throughout skeleton)
+- **Solution**: Applied correction formula to all bones: `corrected_quat = bodyRest * animRest^-1 * keyframe_quat`, pre-multiplied into animation keyframes during FBX export
+- **Result**: Animation now plays on correct skeleton without arms behind back or other rotational misalignments
+- **Commit**: TBD (awaiting test results)
+
+---
+
 ## 2026-02-27: Switched to ReactAvatar animation approach
 
 - **What**: Abandoned complex Blender retargeting (approaches 1-7). Adopted ReactAvatar's proven approach:
