@@ -4,6 +4,81 @@ Persistent log of problems, fixes, and failed attempts. Never delete entries.
 
 ---
 
+## 2026-02-27: Skeletal animation — Mixamo rig + FBX animation pipeline
+
+### Phase 1: Add skeleton to body GLB
+- Added MPFB2 Mixamo rig (52 bones, `mixamorig:` prefix) via `HumanService.add_builtin_rig(basemesh, "mixamo", import_weights=True)`
+- Armature modifier removed before subdivision bake, re-added after
+- System assets (eyes, eyebrows, teeth) assigned rigidly to `mixamorig:Head` bone
+- Clothing gets bone weights via Blender Data Transfer modifier from body mesh
+- Body GLB exported with `export_skins=True`
+
+### Phase 2: Hand-crafted wave animation (ABANDONED)
+- Created `create_test_animation.py` with manual bone rotations
+- **Problem**: Zero quaternions `[0,0,0,0]` at animation boundaries
+  - **Root cause**: `export_force_sampling=False` corrupted rest-pose quaternions
+  - **Fix**: `export_force_sampling=True` with fcurve cleanup
+- **Problem**: Skeleton mismatch between body GLB and animation GLB
+  - **Root cause**: Body export pipeline modifies skeleton (breast capture, helper removal, subdivision)
+  - **Fix**: Export animation from body's own armature (Step 9 in export_makehuman.py)
+- **Problem**: Clothing gaps at joints / progressive skeleton corruption on shirt swap
+  - **Root cause**: `SkinnedMesh.bind(bodySkeleton)` without explicit bindMatrix called `calculateInverses()` from animated pose, corrupting the shared skeleton
+  - **Fix**: Pass `bodyBindMatrix` explicitly to `bind()`, plus bone index remapping for clothing
+- **User feedback**: Hand-crafted animation looked unnatural. "shouldn't we be using predone animations from mixamo?"
+
+### Phase 3: Mixamo FBX pipeline — export issues (RESOLVED)
+- Downloaded 4 Mixamo FBX animations (Without Skin, Uniform keyframe reduction): idle, cheer, macarena, shrug
+- Added `export_mixamo_animations()` to export_makehuman.py Step 9
+- **Problem**: All animation GLBs identical 13KB — no animation data exported
+  - **Root cause**: Blender 5.0 layered actions require action slot assignment
+  - **Fix**: Added `animation_data.action_slot = fbx_action.slots[0]`
+- **Problem**: After slot fix, GLBs had translation+scale channels but ZERO rotation channels
+  - **Root cause**: GLTF exporter's `force_sampling` needs the action's SOURCE armature
+  - **Fix**: Export from FBX armature directly. Bone names match (`mixamorig:` convention).
+- **Problem**: Animation makes character extremely tall/stretched
+  - **Root cause**: Mixamo FBX translation tracks apply absolute bone positions that differ from MPFB2's bone lengths
+  - **Fix**: Strip translation/scale tracks in Three.js. Keep only rotation tracks.
+
+### Phase 4: Arms behind body — retargeting investigation (CURRENT — UNSOLVED)
+- **Problem**: Arms go BEHIND the body instead of at sides during idle animation
+- **FBX armature info**: +90° X rotation AND 0.1 scale on object. Body armature has identity matrix.
+- **Approach 1: Copy Rotation constraints (WORLD→WORLD) + NLA bake**
+  - debug_retarget.py verified ALL world rotations MATCH between FBX and body armature
+  - Arms still behind body in Three.js
+- **Approach 2: Manual full-matrix retargeting**
+  - Set `body_pb.matrix = body_world_inv @ fbx_world` for each bone/frame
+  - FBX 0.1 scale corrupted bone positions (Hips Y: 0.565 vs rest 0.914)
+  - Rotation values IDENTICAL to constraint approach
+- **Approach 3: Rotation-only manual retargeting**
+  - Computed `pose_rot = rest_wr.inverted() @ target_wr` for each bone
+  - Pre-computed rest_local_rots for parent chain tracking
+  - Rotation values IDENTICAL to previous two approaches
+- **Verified NOT the issue**:
+  - Blender retargeting is correct (debug_retarget.py: ALL bones MATCH)
+  - GLTF rest poses match between body and animation GLBs (byte-identical)
+  - Animation structure correct (156 channels, proper duration)
+  - Track filtering (tested all tracks, rotation-only tracks — same result)
+- **verify_world_rotations.py finding**: GLTF quaternions chained through hierarchy produce wrong world rotations vs Blender:
+  - Hips: GLTF (-3.8°, -7.3°, -2.2°) vs Blender (86.0°, 2.1°, -7.4°) — ~90° diff expected for Z-up→Y-up
+  - LeftArm: GLTF (-171.1°, 77.0°, 26.1°) vs Blender (-106.8°, -5.6°, 78.7°) — DOES NOT match even after coordinate conversion
+- **FAILED FIX**: Filtering to quaternion-only tracks in Three.js — no visual change
+- **User insight**: "doesn't this have to be an inversion problem?" — arms going behind instead of in front is consistent with inverted/conjugated rotations
+- **Next investigation**: Check for quaternion conjugate/inversion issue in GLTF export or Three.js interpretation. Possible causes:
+  - GLTF exporter conjugating quaternions during Y-up conversion
+  - Rest pose quaternion vs animation quaternion inversion mismatch
+  - Blender bone axes vs GLTF node axes differing (requiring rotation inversion)
+
+### Key Learnings
+- Blender 5.0 `ActionSlot`: `action.slots[0]` must be explicitly assigned to `animation_data.action_slot`
+- GLTF force_sampling requires the action's source armature — can't transfer actions between armatures for export
+- Mixamo FBX (65 bones) vs MPFB2 Mixamo rig (52 bones): all 52 match, 13 extra are fingertip4/toe_end/head_top
+- Cross-skeleton animation: only rotation tracks transfer safely; translation tracks encode bone-specific lengths
+- FBX armature has +90° X rotation AND 0.1 scale on object
+- Three retargeting approaches produce identical rotation values — issue is in GLTF export → Three.js pipeline, not retargeting
+- `force_sampling=True` exports ALL channels (position/scale/rotation) even if only rotation was keyframed
+
+---
+
 ## 2026-02-26: Clothing morph deltas too small — delta scaling + spatial fallback
 
 - **Problem**: Barycentric interpolation smooths out deformation at morph boundaries — only 94% max tracking vs body. Pants behind knee had zero tracking for leg morphs (upperleg-fat, upperleg-muscle-incr) at only 9-13% morph values.
