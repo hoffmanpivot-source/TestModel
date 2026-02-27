@@ -4,6 +4,16 @@ Persistent log of problems, fixes, and failed attempts. Never delete entries.
 
 ---
 
+## 2026-02-27: Switched to ReactAvatar animation approach
+
+- **What**: Abandoned complex Blender retargeting (approaches 1-7). Adopted ReactAvatar's proven approach:
+  - **Blender**: Just FBX→GLB with `transform_apply` (bakes -90° X rotation into rest poses)
+  - **JS**: Filter to quaternion-only tracks (remove position/scale), apply Hips rest-pose correction
+- **Why**: User pointed to working implementation in `~/ReactAvatar`. Key insight: don't retarget in Blender — just transfer quaternion-only tracks and correct Hips rest pose in JS.
+- **Status**: v0.0.45, needs testing
+
+---
+
 ## 2026-02-27: Stale FBX action causing wrong animation playback
 
 - **Problem**: GLBs exported by `export_animations_retargeted.py` contained TWO animations — the stale FBX action `Armature|mixamo.com|Layer0` at index 0, and the correct retargeted action at index 1. `gltf.animations[0]` picked the wrong (un-retargeted) animation, so approach 7 values were never actually tested in the app.

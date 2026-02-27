@@ -1,48 +1,35 @@
 # TestModel Handoff — Session 8.0
 
 ## Where We Are
-- **Version**: 0.0.44
+- **Version**: 0.0.45
 - **Branch**: main
 - **App**: React Native + Expo + Three.js MakeHuman character viewer with morph targets, clothing, skeletal animation (in progress)
 
-## Current Problem: Arms Behind Body During Animation (STALE ACTION BUG FOUND)
-Animation retargeting from Mixamo FBX to MakeHuman body produced wrong arm positions — arms went behind back instead of at sides. However, we discovered the retargeted animation was never actually playing.
+## Current Status: Switched to ReactAvatar Animation Approach
+Abandoned complex Blender retargeting (7 approaches tried, none worked). Adopted the proven approach from `~/ReactAvatar`:
 
-### Stale Action Discovery
-- Exported GLBs contained TWO animations: stale FBX action `Armature|mixamo.com|Layer0` at index 0, retargeted action at index 1
-- `gltf.animations[0]` picked the stale (un-retargeted) animation every time
-- **All approach 7 testing was invalid** — the correct retargeted values were never played
-- Fix: Added stale action cleanup in `export_animations_retargeted.py` before export
+### New Approach
+- **Blender**: Simple FBX→GLB export with `transform_apply` — bakes the -90° X rotation into rest poses instead of fighting it
+- **JS**: Filter to quaternion-only tracks (remove position/scale), apply Hips rest-pose correction at runtime
+- **Key insight**: Don't retarget in Blender. Just transfer quaternion-only tracks and correct Hips rest pose in JS.
 
-### Root Cause (Retargeting Theory — Still Valid)
-- Source (FBX) and body (MPFB2) skeletons have different world rest orientations (~7° diff for LeftArm)
-- All previous approaches (1-6) copied ABSOLUTE world orientation — wrong when rest orientations differ
-- Correct approach (7): transfer world-space DELTA from rest, not absolute orientation
-
-### What's Been Tried
-1. JS three-vrm world-space formula — wrong result (absolute orientation)
-2. JS simple delta method — wrong result (absolute orientation)
-3. Blender COPY_ROTATION constraint + bake — wrong result (absolute orientation)
-4. Blender world-space delta retargeting (approach 7) — **never actually tested due to stale action bug**
-
-### Key Diagnostic
-- Hardcoding retargeted LeftArm value on test animation ALSO showed arm behind back
-- Proves the value itself was wrong for approaches 1-6
-- Approach 7 uses a fundamentally different formula — needs fresh testing now
+### Why Previous Approaches Failed
+- Approaches 1-6 copied ABSOLUTE world orientation — wrong when source/body rest orientations differ (~7° for LeftArm)
+- Approach 7 (world-space delta) was never properly tested due to stale action bug (GLB had 2 animations, wrong one at index 0)
+- All approaches tried increasingly complex Blender retargeting when the real solution was simpler: just export clean quaternions and handle correction in JS
 
 ## What's Next
-1. **Test approach 7 with stale action fix** — re-export GLBs and verify the correct animation plays at index 0
-2. If approach 7 works, test all 4 animations (idle, cheer, macarena, shrug)
-3. If still wrong, investigate GLTF exporter quaternion handling (Z-up→Y-up conversion)
-4. Consider dumping raw GLTF binary quaternion values vs what Three.js reads
+1. **Test v0.0.45** — verify the ReactAvatar animation approach works with MakeHuman model
+2. If works, clean up old retargeting scripts and debug code
+3. Test all 4 animations (idle, cheer, macarena, shrug)
 
 ## Key Files
 | File | Purpose |
 |------|---------|
-| scripts/export_animations_retargeted.py | World-space delta retargeting + stale action cleanup |
+| scripts/export_animations_retargeted.py | Old retargeting (to be replaced) |
 | scripts/export_animations.py | Direct FBX→GLB export |
-| src/components/ModelViewer.tsx | Animation loading + playback (no JS retargeting) |
-| App.tsx | Animation definitions, version 0.0.44 |
+| src/components/ModelViewer.tsx | Animation loading + playback |
+| App.tsx | Animation definitions, version 0.0.45 |
 
 ## Commands
 ```bash
@@ -53,6 +40,5 @@ cd /Users/mikeh/TestModel && npx expo start --port 8081 --clear
 ## Work Log
 - Investigated arms-behind-body: tried approaches 4-7 (JS + Blender retargeting methods)
 - Identified root cause: absolute orientation copy fails when rest orientations differ
-- Implemented approach 7: world-space delta retargeting in Blender
-- **Discovered stale action bug**: exported GLBs had 2 animations, wrong one at index 0
-- Fixed stale action cleanup in export script — approach 7 needs fresh testing
+- Discovered stale action bug: exported GLBs had 2 animations, wrong one at index 0
+- **Switched to ReactAvatar approach**: simple FBX→GLB with transform_apply + JS quaternion filtering + Hips correction
