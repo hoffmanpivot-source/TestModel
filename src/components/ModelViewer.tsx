@@ -710,25 +710,19 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
             // Step 2: Per-bone rest-pose correction.
             // MPFB2 body skeleton has different rest orientations than Mixamo animation skeleton.
             // For each bone: correction = bodyRest * animRest^-1, pre-multiplied into keyframes.
-            const model = modelRef.current;
 
-            // Build map of body bone rest quaternions
-            const bodyBoneRests = new Map<string, THREE.Quaternion>();
-            if (model) {
-              model.traverse((child: any) => {
-                if (child instanceof THREE.SkinnedMesh && child.skeleton) {
-                  for (const bone of child.skeleton.bones) {
-                    bodyBoneRests.set(bone.name, bone.quaternion.clone());
-                  }
-                }
-              });
-            }
+            // Use saved rest quaternions (captured at load time, BEFORE any animation plays).
+            // Reading bone.quaternion during animation gives animated values, not rest!
+            const savedBodyRests = bodyRestQuatsRef.current;
 
-            // Build map of animation bone rest quaternions from GLB scene nodes
+            // Build map of animation bone rest quaternions from GLB scene nodes.
+            // Node names have colons (mixamorig:Hips) but track names are sanitized
+            // (mixamorigHips) by Three.js PropertyBinding. Index by sanitized name.
             const animBoneRests = new Map<string, THREE.Quaternion>();
             gltf.scene.traverse((node: any) => {
               if (node.name) {
-                animBoneRests.set(node.name, node.quaternion.clone());
+                const sanitized = node.name.replace(/:/g, '');
+                animBoneRests.set(sanitized, node.quaternion.clone());
               }
             });
 
@@ -739,7 +733,7 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
               if (!track.name.endsWith('.quaternion')) continue;
               const boneName = track.name.replace('.quaternion', '');
 
-              const bodyRest = bodyBoneRests.get(boneName);
+              const bodyRest = savedBodyRests[boneName];
               const animRest = animBoneRests.get(boneName);
               if (!bodyRest || !animRest) continue;
 
