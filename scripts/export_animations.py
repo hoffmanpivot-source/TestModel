@@ -1,9 +1,13 @@
 """
 Export Mixamo FBX animations as individual GLB files (armature + animation only, no mesh).
 
+Direct FBX -> GLB export. The animation GLB will have the FBX armature's rest poses,
+which differ from the body GLB's rest poses. The app remaps animation values at load time
+using: corrected = bodyRest * animRest^-1 * animValue
+
 Usage:
   1. Download animations from mixamo.com as FBX Binary, Without Skin, 30 FPS
-  2. Place in assets/animations/fbx/
+  2. Place in assets/models/animations/
   3. Run: /Applications/Blender.app/Contents/MacOS/Blender --background --python scripts/export_animations.py
 
 Output: assets/models/animations/<name>.glb (one per animation)
@@ -15,17 +19,16 @@ import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
-FBX_DIR = os.path.join(PROJECT_DIR, "assets", "animations", "fbx")
+FBX_DIR = os.path.join(PROJECT_DIR, "assets", "models", "animations")
 OUTPUT_DIR = os.path.join(PROJECT_DIR, "assets", "models", "animations")
 
 # Map: output name -> FBX filename (without extension)
 # Add entries here as you download more animations from Mixamo
 ANIMATIONS = {
     "idle": "idle",
-    "wave": "wave",
     "cheer": "cheer",
-    "dance": "dance",
-    "walk": "walk",
+    "macarena": "macarena",
+    "shrug": "shrug",
 }
 
 
@@ -36,14 +39,21 @@ def export_animation(anim_name, fbx_filename):
         print(f"  SKIP: {fbx_path} not found")
         return False
 
-    # Clear scene
+    # Clear scene completely — objects AND orphan data (actions, meshes, armatures)
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete()
+    # Purge ALL orphan data blocks to prevent action accumulation between imports
+    for action in list(bpy.data.actions):
+        bpy.data.actions.remove(action)
+    for arm in list(bpy.data.armatures):
+        bpy.data.armatures.remove(arm)
+    for mesh in list(bpy.data.meshes):
+        bpy.data.meshes.remove(mesh)
 
-    # Import FBX with automatic bone orientation (important for Mixamo)
+    # Import FBX without auto bone orientation — preserve original bone rest poses.
+    # The GLTF exporter handles Y-up conversion correctly.
     bpy.ops.import_scene.fbx(
         filepath=fbx_path,
-        automatic_bone_orientation=True,
         use_anim=True,
     )
 
@@ -63,10 +73,13 @@ def export_animation(anim_name, fbx_filename):
     for mesh_obj in meshes_to_remove:
         bpy.data.objects.remove(mesh_obj, do_unlink=True)
 
-    # Rename the action for clarity
+    # Rename the action and ensure slot assignment (Blender 5.x)
     if armature.animation_data and armature.animation_data.action:
-        armature.animation_data.action.name = anim_name
-        frame_count = int(armature.animation_data.action.frame_range[1] - armature.animation_data.action.frame_range[0])
+        act = armature.animation_data.action
+        act.name = anim_name
+        if hasattr(act, 'slots') and act.slots:
+            armature.animation_data.action_slot = act.slots[0]
+        frame_count = int(act.frame_range[1] - act.frame_range[0])
         print(f"  Action: {anim_name}, frames: {frame_count}")
 
     # Select armature for export
@@ -84,6 +97,7 @@ def export_animation(anim_name, fbx_filename):
         export_skins=False,
         export_morph=False,
         export_yup=True,
+        export_force_sampling=True,
     )
 
     file_size = os.path.getsize(out_path)

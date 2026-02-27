@@ -69,6 +69,9 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
   const currentActionRef = useRef<THREE.AnimationAction | null>(null);
   const animClipsRef = useRef<Map<string, THREE.AnimationClip>>(new Map());
   const currentAnimIdRef = useRef<string | null>(null);
+  const bodyRestQuatsRef = useRef<Record<string, THREE.Quaternion>>({});
+  const bodyWorldRestRef = useRef<Record<string, THREE.Quaternion>>({});
+  const bodyParentWorldRestRef = useRef<Record<string, THREE.Quaternion>>({});
 
   // Camera orbit state
   const orbitRef = useRef<OrbitState>({
@@ -401,6 +404,37 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
               clockRef.current = new THREE.Clock(); // Reset clock
               console.log("[ModelViewer] AnimationMixer created");
 
+              // Save body rest quaternions ONCE at load time (before any animation).
+              // We save both local and WORLD rest quats (needed for retargeting).
+              // IMPORTANT: updateMatrixWorld first so getWorldQuaternion returns correct values
+              model.updateMatrixWorld(true);
+              const restQuats: Record<string, THREE.Quaternion> = {};
+              const worldRest: Record<string, THREE.Quaternion> = {};
+              const parentWorldRest: Record<string, THREE.Quaternion> = {};
+              model.traverse((child) => {
+                if (child instanceof THREE.SkinnedMesh) {
+                  const skel = child.skeleton;
+                  console.log(`[ModelViewer] SkinnedMesh "${child.name}" skeleton: ${skel.bones.length} bones`);
+                  for (const bone of skel.bones) {
+                    if (!restQuats[bone.name]) {
+                      restQuats[bone.name] = bone.quaternion.clone();
+                      const wq = new THREE.Quaternion();
+                      bone.getWorldQuaternion(wq);
+                      worldRest[bone.name] = wq;
+                      const pwq = new THREE.Quaternion();
+                      if (bone.parent) {
+                        bone.parent.getWorldQuaternion(pwq);
+                      }
+                      parentWorldRest[bone.name] = pwq;
+                    }
+                  }
+                  console.log(`[ModelViewer] Saved ${Object.keys(restQuats).length} body rest quaternions (local + world)`);
+                }
+              });
+              bodyRestQuatsRef.current = restQuats;
+              bodyWorldRestRef.current = worldRest;
+              bodyParentWorldRestRef.current = parentWorldRest;
+
               console.log(`[ModelViewer] Model transform: pos(${model.position.x.toFixed(4)},${model.position.y.toFixed(4)},${model.position.z.toFixed(4)}) scale(${model.scale.x.toFixed(4)})`);
               console.log(`[ModelViewer] Body bbox: min(${box.min.x.toFixed(4)},${box.min.y.toFixed(4)},${box.min.z.toFixed(4)}) max(${box.max.x.toFixed(4)},${box.max.y.toFixed(4)},${box.max.z.toFixed(4)})`);
 
@@ -480,6 +514,17 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
 
                 const clothingMeshes: THREE.Mesh[] = [];
 
+                // Find body skeleton and its bind matrix for rebinding clothing
+                let bodySkeleton: THREE.Skeleton | null = null;
+                let bodyBindMatrix: THREE.Matrix4 | null = null;
+                model.traverse((child) => {
+                  if ((child as THREE.SkinnedMesh).isSkinnedMesh && !bodySkeleton) {
+                    const bodyMesh = child as THREE.SkinnedMesh;
+                    bodySkeleton = bodyMesh.skeleton;
+                    bodyBindMatrix = bodyMesh.bindMatrix.clone();
+                  }
+                });
+
                 // Apply external texture and push clothing outward along normals
                 clothingScene.traverse((child) => {
                   if (child instanceof THREE.Mesh) {
@@ -503,22 +548,51 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
                       pos.needsUpdate = true;
                     }
 
+                    // Rebind clothing SkinnedMesh to body skeleton so animation drives clothing too
+                    const skinnedChild = child as THREE.SkinnedMesh;
+                    if (skinnedChild.isSkinnedMesh && bodySkeleton && bodyBindMatrix) {
+                      // Remap clothing bone indices to match body skeleton ordering.
+                      // Each GLB can have different joint orderings, so skinIndex values
+                      // from the clothing GLB need to be translated to body skeleton indices.
+                      const clothingSkeleton = skinnedChild.skeleton;
+                      const indexMap = new Map<number, number>();
+                      clothingSkeleton.bones.forEach((clothingBone, clothingIdx) => {
+                        const bodyIdx = bodySkeleton!.bones.findIndex(
+                          (b) => b.name === clothingBone.name
+                        );
+                        if (bodyIdx >= 0) {
+                          indexMap.set(clothingIdx, bodyIdx);
+                        }
+                      });
+
+                      const skinIndex = skinnedChild.geometry.getAttribute("skinIndex");
+                      if (skinIndex) {
+                        for (let i = 0; i < skinIndex.count; i++) {
+                          for (let j = 0; j < skinIndex.itemSize; j++) {
+                            const oldIdx = skinIndex.getComponent(i, j);
+                            const newIdx = indexMap.get(oldIdx);
+                            if (newIdx !== undefined) {
+                              skinIndex.setComponent(i, j, newIdx);
+                            }
+                          }
+                        }
+                        skinIndex.needsUpdate = true;
+                      }
+
+                      // CRITICAL: Pass bindMatrix explicitly to prevent bind() from calling
+                      // skeleton.calculateInverses(). Without this, each clothing rebind
+                      // recalculates bone inverses from the current animated pose, corrupting
+                      // the shared skeleton for ALL meshes.
+                      skinnedChild.bind(bodySkeleton, bodyBindMatrix);
+                      console.log(`[ModelViewer] Rebound clothing "${child.name}" to body skeleton (remapped ${indexMap.size} bone indices)`);
+                    }
+
                     const hasMorphs = child.morphTargetDictionary && child.morphTargetInfluences;
                     if (hasMorphs) {
                       clothingMeshes.push(child);
                     }
 
-                    // Debug: log mesh bounding box
-                    const bbox = new THREE.Box3().setFromBufferAttribute(pos);
-                    console.log(`[ModelViewer] Clothing mesh: "${child.name}" (tex: ${tex ? "yes" : "no"}, morphs: ${hasMorphs ? Object.keys(child.morphTargetDictionary!).length : 0}) bbox: min(${bbox.min.x.toFixed(3)},${bbox.min.y.toFixed(3)},${bbox.min.z.toFixed(3)}) max(${bbox.max.x.toFixed(3)},${bbox.max.y.toFixed(3)},${bbox.max.z.toFixed(3)})`);
-                  }
-                });
-
-                // Debug: log scene transforms
-                console.log(`[ModelViewer] clothingScene position: (${clothingScene.position.x.toFixed(3)},${clothingScene.position.y.toFixed(3)},${clothingScene.position.z.toFixed(3)}) scale: (${clothingScene.scale.x.toFixed(3)},${clothingScene.scale.y.toFixed(3)},${clothingScene.scale.z.toFixed(3)})`);
-                clothingScene.traverse((c) => {
-                  if (c !== clothingScene) {
-                    console.log(`[ModelViewer] child "${c.name}" pos: (${c.position.x.toFixed(3)},${c.position.y.toFixed(3)},${c.position.z.toFixed(3)}) scale: (${c.scale.x.toFixed(3)},${c.scale.y.toFixed(3)},${c.scale.z.toFixed(3)})`);
+                    console.log(`[ModelViewer] Clothing mesh: "${child.name}" (skinned: ${skinnedChild.isSkinnedMesh || false}, morphs: ${hasMorphs ? Object.keys(child.morphTargetDictionary!).length : 0})`);
                   }
                 });
 
@@ -558,13 +632,18 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
     const mixer = mixerRef.current;
     if (!mixer) return;
 
-    // Stop animation
+    // Stop animation and reset to rest pose
     if (!currentAnimation) {
       if (currentActionRef.current) {
-        currentActionRef.current.fadeOut(0.3);
+        currentActionRef.current.stop();
         currentActionRef.current = null;
         currentAnimIdRef.current = null;
-        console.log("[ModelViewer] Animation stopped");
+        // Reset all actions and stop mixer to restore rest pose
+        mixer.stopAllAction();
+        // Force mixer time to 0 so bones return to bind pose
+        mixer.setTime(0);
+        mixer.update(0);
+        console.log("[ModelViewer] Animation stopped, reset to rest pose");
       }
       return;
     }
@@ -586,12 +665,48 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
       console.log(`[ModelViewer] Playing animation: ${currentAnimation.id}`);
     };
 
-    // Check cache first
-    const cached = animClipsRef.current.get(currentAnimation.id);
-    if (cached) {
-      playClip(cached);
-      return;
+    // DEBUG TEST: If animation is "shrug", create a test clip that sets
+    // LeftArm to the exact retargeted idle value to diagnose direction
+    if (currentAnimation.id === "shrug") {
+      console.log("[ModelViewer] DEBUG: Creating test animation (LeftArm = retargeted idle value)");
+      const model = modelRef.current;
+      const savedRest = bodyRestQuatsRef.current;
+      if (model && Object.keys(savedRest).length > 0) {
+        const testTracks: THREE.KeyframeTrack[] = [];
+        model.traverse((child: any) => {
+          if (child instanceof THREE.SkinnedMesh && child.name === "Human") {
+            for (const bone of child.skeleton.bones) {
+              const restQ = savedRest[bone.name];
+              if (!restQ) continue;
+              let q = restQ.clone();
+              if (bone.name === "mixamorigLeftArm") {
+                // Use exact retargeted idle value
+                q = new THREE.Quaternion(0.6880, -0.0105, 0.1605, 0.7077);
+                console.log(`[DEBUG] LeftArm: rest=[${restQ.x.toFixed(4)},${restQ.y.toFixed(4)},${restQ.z.toFixed(4)},${restQ.w.toFixed(4)}] test=[${q.x.toFixed(4)},${q.y.toFixed(4)},${q.z.toFixed(4)},${q.w.toFixed(4)}]`);
+              }
+              testTracks.push(new THREE.QuaternionKeyframeTrack(
+                `${bone.name}.quaternion`,
+                [0, 1],
+                [q.x, q.y, q.z, q.w, q.x, q.y, q.z, q.w]
+              ));
+            }
+          }
+        });
+        if (testTracks.length > 0) {
+          const testClip = new THREE.AnimationClip("test", 1, testTracks);
+          animClipsRef.current.set("shrug", testClip);
+          playClip(testClip);
+          return;
+        }
+      }
     }
+
+    // DEBUG: skip cache to force reload with fresh GLB data
+    // const cached = animClipsRef.current.get(currentAnimation.id);
+    // if (cached) {
+    //   playClip(cached);
+    //   return;
+    // }
 
     // Load animation GLB
     console.log(`[ModelViewer] Loading animation: ${currentAnimation.id}`);
@@ -604,10 +719,46 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
           "",
           (gltf) => {
             if (gltf.animations.length > 0) {
-              const clip = gltf.animations[0];
+              const rawClip = gltf.animations[0];
+
+              // Animation GLBs are pre-retargeted in Blender (constraint-based world-space matching).
+              // They use the body skeleton's rest pose, so no JS retargeting is needed.
+              // Just filter to quaternion tracks and skip finger bones.
+              const bodyBones = bodyRestQuatsRef.current;
+              // Debug: dump all track names from the animation GLB
+              console.log(`[ANIM-DEBUG] Raw clip has ${rawClip.tracks.length} tracks:`);
+              for (const track of rawClip.tracks) {
+                console.log(`[ANIM-DEBUG]   ${track.name} (${track.values.length / 4} keyframes)`);
+              }
+              // Debug: dump animation GLB scene hierarchy
+              console.log(`[ANIM-DEBUG] Animation GLB scene hierarchy:`);
+              gltf.scene.traverse((node: any) => {
+                const parentName = node.parent ? node.parent.name : 'NONE';
+                const q = node.quaternion;
+                console.log(`[ANIM-DEBUG]   ${node.name} (parent: ${parentName}) quat=[${q.x.toFixed(4)},${q.y.toFixed(4)},${q.z.toFixed(4)},${q.w.toFixed(4)}]`);
+              });
+
+              const filteredTracks: THREE.KeyframeTrack[] = [];
+              for (const track of rawClip.tracks) {
+                if (!track.name.endsWith('.quaternion')) continue;
+                const boneName = track.name.replace('.quaternion', '');
+                if (!bodyBones[boneName]) continue;
+                if (boneName.match(/Thumb|Index[0-9]|Middle[0-9]|Ring[0-9]|Pinky[0-9]/)) continue;
+
+                // Debug: log first keyframe for key bones
+                if (['mixamorigHips', 'mixamorigLeftArm', 'mixamorigLeftUpLeg'].includes(boneName)) {
+                  const v = track.values;
+                  const bodyRest = bodyBones[boneName];
+                  console.log(`[ANIM-DEBUG] ${boneName}: frame0=[${v[0].toFixed(4)},${v[1].toFixed(4)},${v[2].toFixed(4)},${v[3].toFixed(4)}] bodyRest=[${bodyRest.x.toFixed(4)},${bodyRest.y.toFixed(4)},${bodyRest.z.toFixed(4)},${bodyRest.w.toFixed(4)}]`);
+                }
+
+                filteredTracks.push(track);
+              }
+              console.log(`[ModelViewer] Using ${filteredTracks.length} pre-retargeted tracks (no JS retargeting)`);
+
+              const clip = new THREE.AnimationClip(rawClip.name, rawClip.duration, filteredTracks);
               animClipsRef.current.set(currentAnimation.id, clip);
               console.log(`[ModelViewer] Animation loaded: ${currentAnimation.id} (${clip.duration.toFixed(1)}s, ${clip.tracks.length} tracks)`);
-              // Only play if still the requested animation
               if (currentAnimation.id === currentAnimIdRef.current) return;
               playClip(clip);
             } else {
@@ -682,6 +833,34 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
         if (mixerRef.current) {
           const delta = clockRef.current.getDelta();
           mixerRef.current.update(delta);
+          // DEBUG: log bone quaternions periodically during animation
+          if (currentActionRef.current && modelRef.current) {
+            const frameCount = (animate as any).__debugFrame = ((animate as any).__debugFrame || 0) + 1;
+            if (frameCount === 5) { // Log once near start
+              modelRef.current.traverse((child: any) => {
+                if (child instanceof THREE.SkinnedMesh) {
+                  for (const bone of child.skeleton.bones) {
+                    if (bone.name.includes('LeftArm') && !bone.name.includes('Fore')) {
+                      const q = bone.quaternion;
+                      const wp = new THREE.Vector3();
+                      bone.getWorldPosition(wp);
+                      console.log(`[ANIM-DEBUG] LeftArm quaternion: [${q.x.toFixed(4)},${q.y.toFixed(4)},${q.z.toFixed(4)},${q.w.toFixed(4)}]`);
+                      console.log(`[ANIM-DEBUG] LeftArm worldPos: [${wp.x.toFixed(4)},${wp.y.toFixed(4)},${wp.z.toFixed(4)}]`);
+                      // Also log parent
+                      if (bone.parent) {
+                        const pq = bone.parent.quaternion;
+                        console.log(`[ANIM-DEBUG] ${bone.parent.name} quaternion: [${pq.x.toFixed(4)},${pq.y.toFixed(4)},${pq.z.toFixed(4)},${pq.w.toFixed(4)}]`);
+                      }
+                    }
+                    if (bone.name.includes('Hips')) {
+                      const q = bone.quaternion;
+                      console.log(`[ANIM-DEBUG] Hips quaternion: [${q.x.toFixed(4)},${q.y.toFixed(4)},${q.z.toFixed(4)},${q.w.toFixed(4)}]`);
+                    }
+                  }
+                }
+              });
+            }
+          }
         }
         renderer.render(scene, camera);
         gl.endFrameEXP();

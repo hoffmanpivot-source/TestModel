@@ -42,31 +42,25 @@ Persistent log of problems, fixes, and failed attempts. Never delete entries.
 ### Phase 4: Arms behind body — retargeting investigation (CURRENT — UNSOLVED)
 - **Problem**: Arms go BEHIND the body instead of at sides during idle animation
 - **FBX armature info**: +90° X rotation AND 0.1 scale on object. Body armature has identity matrix.
-- **Approach 1: Copy Rotation constraints (WORLD→WORLD) + NLA bake**
-  - debug_retarget.py verified ALL world rotations MATCH between FBX and body armature
-  - Arms still behind body in Three.js
-- **Approach 2: Manual full-matrix retargeting**
-  - Set `body_pb.matrix = body_world_inv @ fbx_world` for each bone/frame
-  - FBX 0.1 scale corrupted bone positions (Hips Y: 0.565 vs rest 0.914)
-  - Rotation values IDENTICAL to constraint approach
-- **Approach 3: Rotation-only manual retargeting**
-  - Computed `pose_rot = rest_wr.inverted() @ target_wr` for each bone
-  - Pre-computed rest_local_rots for parent chain tracking
-  - Rotation values IDENTICAL to previous two approaches
-- **Verified NOT the issue**:
-  - Blender retargeting is correct (debug_retarget.py: ALL bones MATCH)
-  - GLTF rest poses match between body and animation GLBs (byte-identical)
-  - Animation structure correct (156 channels, proper duration)
-  - Track filtering (tested all tracks, rotation-only tracks — same result)
-- **verify_world_rotations.py finding**: GLTF quaternions chained through hierarchy produce wrong world rotations vs Blender:
-  - Hips: GLTF (-3.8°, -7.3°, -2.2°) vs Blender (86.0°, 2.1°, -7.4°) — ~90° diff expected for Z-up→Y-up
-  - LeftArm: GLTF (-171.1°, 77.0°, 26.1°) vs Blender (-106.8°, -5.6°, 78.7°) — DOES NOT match even after coordinate conversion
-- **FAILED FIX**: Filtering to quaternion-only tracks in Three.js — no visual change
-- **User insight**: "doesn't this have to be an inversion problem?" — arms going behind instead of in front is consistent with inverted/conjugated rotations
-- **Next investigation**: Check for quaternion conjugate/inversion issue in GLTF export or Three.js interpretation. Possible causes:
-  - GLTF exporter conjugating quaternions during Y-up conversion
-  - Rest pose quaternion vs animation quaternion inversion mismatch
-  - Blender bone axes vs GLTF node axes differing (requiring rotation inversion)
+
+#### Session 7 attempts (previous):
+- **Approach 1: Copy Rotation constraints (WORLD→WORLD) + NLA bake** — Arms still behind
+- **Approach 2: Manual full-matrix retargeting** — Identical values, arms still behind
+- **Approach 3: Rotation-only manual retargeting** — Identical values, arms still behind
+- **verify_world_rotations.py**: GLTF LeftArm world rotation doesn't match Blender even after Z-up→Y-up conversion
+
+#### Session 8 attempts (current):
+- **Approach 4: JS three-vrm world-space formula** — `neutral = srcParentWorld * animVal * srcBoneWorld^-1; bodyVal = tgtParentWorld^-1 * neutral * tgtBoneWorld` — Values mathematically verified correct, arms still behind
+- **Approach 5: JS simple delta method** — `bodyVal = bodyRest * srcRest^-1 * animVal` — Same values as approach 4, arms still behind
+- **Approach 6: Blender COPY_ROTATION constraint (WORLD→WORLD) + bake** — Same values as approaches 4&5, arms still behind
+- **Approach 7: Blender world-space delta retargeting** — `worldDelta = srcWorldAnim * srcWorldRest^-1; bodyWorldAnim = worldDelta * bodyWorldRest` — Processing root-to-leaf with parent chain tracking. Testing in progress.
+
+#### Critical diagnostic finding:
+- Test animation (shrug button with hardcoded retargeted value [0.688,-0.010,0.160,0.708] for LeftArm, all other bones at rest) ALSO puts arm behind back
+- This proves the RETARGETED VALUE ITSELF is wrong for the body skeleton
+- All three JS methods + Blender COPY_ROTATION produce identical wrong values because they all copy ABSOLUTE world orientation
+- **Root cause identified**: Mesh deformation = `bone_world_anim * bone_world_rest^-1`. Source and body bones have DIFFERENT world rest orientations (~7° diff for LeftArm). Copying absolute orientation produces different deformation than source.
+- **Correct formula**: `bodyWorldAnim = (srcWorldAnim * srcWorldRest^-1) * bodyWorldRest` — preserves the DELTA from rest, not the absolute orientation. Approach 7 implements this.
 
 ### Key Learnings
 - Blender 5.0 `ActionSlot`: `action.slots[0]` must be explicitly assigned to `animation_data.action_slot`
@@ -74,8 +68,10 @@ Persistent log of problems, fixes, and failed attempts. Never delete entries.
 - Mixamo FBX (65 bones) vs MPFB2 Mixamo rig (52 bones): all 52 match, 13 extra are fingertip4/toe_end/head_top
 - Cross-skeleton animation: only rotation tracks transfer safely; translation tracks encode bone-specific lengths
 - FBX armature has +90° X rotation AND 0.1 scale on object
-- Three retargeting approaches produce identical rotation values — issue is in GLTF export → Three.js pipeline, not retargeting
 - `force_sampling=True` exports ALL channels (position/scale/rotation) even if only rotation was keyframed
+- **CRITICAL**: COPY_ROTATION (absolute world match) ≠ correct retargeting when bone world rest orientations differ. Must transfer world-space DELTA from rest, not absolute orientation.
+- Blender `nla.bake()` with `visual_keying=True` and `clear_constraints=True` works for constraint-based baking
+- Three.js AnimationMixer requires Metro cache clear to pick up new GLB assets
 
 ---
 

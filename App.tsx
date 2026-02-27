@@ -19,7 +19,7 @@ import { ClothingPanel } from "./src/components/ClothingPanel";
 import { AnimationPanel } from "./src/components/AnimationPanel";
 import { useMorphTargets } from "./src/hooks/useMorphTargets";
 
-const APP_VERSION = "0.0.40";
+const APP_VERSION = "0.0.43";
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const MODEL_ASSET = require("./assets/models/makehuman_base.glb");
@@ -58,11 +58,10 @@ interface AnimOption {
   glb: number; // require() asset
 }
 const ANIMATION_LIST: AnimOption[] = [
-  { id: "wave", label: "Wave", glb: require("./assets/models/animations/wave.glb") },
-  // { id: "idle", label: "Idle", glb: require("./assets/models/animations/idle.glb") },
-  // { id: "cheer", label: "Cheer", glb: require("./assets/models/animations/cheer.glb") },
-  // { id: "dance", label: "Dance", glb: require("./assets/models/animations/dance.glb") },
-  // { id: "walk", label: "Walk", glb: require("./assets/models/animations/walk.glb") },
+  { id: "idle", label: "Idle", glb: require("./assets/models/animations/idle.glb") },
+  { id: "cheer", label: "Cheer", glb: require("./assets/models/animations/cheer.glb") },
+  { id: "macarena", label: "Macarena", glb: require("./assets/models/animations/macarena.glb") },
+  { id: "shrug", label: "Shrug", glb: require("./assets/models/animations/shrug.glb") },
 ];
 
 const DEV_SCREENSHOT_URL = "http://10.1.1.19:8766/screenshot";
