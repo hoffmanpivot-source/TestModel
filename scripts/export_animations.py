@@ -68,6 +68,24 @@ def export_animation(anim_name, fbx_filename):
         print(f"  ERROR: No armature found in {fbx_filename}.fbx")
         return False
 
+    print(f"  Armature: {armature.name} ({len(armature.data.bones)} bones)")
+    print(f"  Armature rotation: {list(armature.rotation_euler)}")
+
+    # Apply FBX import rotation (-90° X) so animation plays in Y-up coords.
+    # This is critical — without it, the armature object has a rotation that
+    # produces wrong results when GLTF exporter converts to Y-up.
+    # (Matches ReactAvatar's convert_mixamo_animations.py approach)
+    bpy.ops.object.select_all(action='DESELECT')
+    armature.select_set(True)
+    bpy.context.view_layer.objects.active = armature
+    with bpy.context.temp_override(
+        object=armature,
+        active_object=armature,
+        selected_objects=[armature],
+    ):
+        bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+    print(f"  Armature rotation after apply: {list(armature.rotation_euler)}")
+
     # Remove all mesh objects (we only need armature + animation)
     meshes_to_remove = [obj for obj in bpy.context.scene.objects if obj.type == 'MESH']
     for mesh_obj in meshes_to_remove:

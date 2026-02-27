@@ -665,50 +665,17 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
       console.log(`[ModelViewer] Playing animation: ${currentAnimation.id}`);
     };
 
-    // DEBUG TEST: If animation is "shrug", create a test clip that sets
-    // LeftArm to the exact retargeted idle value to diagnose direction
-    if (currentAnimation.id === "shrug") {
-      console.log("[ModelViewer] DEBUG: Creating test animation (LeftArm = retargeted idle value)");
-      const model = modelRef.current;
-      const savedRest = bodyRestQuatsRef.current;
-      if (model && Object.keys(savedRest).length > 0) {
-        const testTracks: THREE.KeyframeTrack[] = [];
-        model.traverse((child: any) => {
-          if (child instanceof THREE.SkinnedMesh && child.name === "Human") {
-            for (const bone of child.skeleton.bones) {
-              const restQ = savedRest[bone.name];
-              if (!restQ) continue;
-              let q = restQ.clone();
-              if (bone.name === "mixamorigLeftArm") {
-                // Use exact retargeted idle value
-                q = new THREE.Quaternion(0.6880, -0.0105, 0.1605, 0.7077);
-                console.log(`[DEBUG] LeftArm: rest=[${restQ.x.toFixed(4)},${restQ.y.toFixed(4)},${restQ.z.toFixed(4)},${restQ.w.toFixed(4)}] test=[${q.x.toFixed(4)},${q.y.toFixed(4)},${q.z.toFixed(4)},${q.w.toFixed(4)}]`);
-              }
-              testTracks.push(new THREE.QuaternionKeyframeTrack(
-                `${bone.name}.quaternion`,
-                [0, 1],
-                [q.x, q.y, q.z, q.w, q.x, q.y, q.z, q.w]
-              ));
-            }
-          }
-        });
-        if (testTracks.length > 0) {
-          const testClip = new THREE.AnimationClip("test", 1, testTracks);
-          animClipsRef.current.set("shrug", testClip);
-          playClip(testClip);
-          return;
-        }
-      }
+    // Check cache first
+    const cached = animClipsRef.current.get(currentAnimation.id);
+    if (cached) {
+      playClip(cached);
+      return;
     }
 
-    // DEBUG: skip cache to force reload with fresh GLB data
-    // const cached = animClipsRef.current.get(currentAnimation.id);
-    // if (cached) {
-    //   playClip(cached);
-    //   return;
-    // }
-
-    // Load animation GLB
+    // Load animation GLB — ReactAvatar approach:
+    // 1. Filter to quaternion-only tracks (remove position/scale)
+    // 2. Apply Hips rest-pose correction
+    // No Blender retargeting needed.
     console.log(`[ModelViewer] Loading animation: ${currentAnimation.id}`);
     fetch(currentAnimation.glbUri)
       .then((res) => res.arrayBuffer())
@@ -718,52 +685,87 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
           buffer,
           "",
           (gltf) => {
-            if (gltf.animations.length > 0) {
-              const rawClip = gltf.animations[0];
+            if (gltf.animations.length === 0) {
+              console.warn(`[ModelViewer] No animations found in ${currentAnimation.id}.glb`);
+              return;
+            }
+            const rawClip = gltf.animations[0];
+            const retargetedClip = rawClip.clone();
 
-              // Animation GLBs are pre-retargeted in Blender (constraint-based world-space matching).
-              // They use the body skeleton's rest pose, so no JS retargeting is needed.
-              // Just filter to quaternion tracks and skip finger bones.
-              const bodyBones = bodyRestQuatsRef.current;
-              // Debug: dump all track names from the animation GLB
-              console.log(`[ANIM-DEBUG] Raw clip has ${rawClip.tracks.length} tracks:`);
-              for (const track of rawClip.tracks) {
-                console.log(`[ANIM-DEBUG]   ${track.name} (${track.values.length / 4} keyframes)`);
-              }
-              // Debug: dump animation GLB scene hierarchy
-              console.log(`[ANIM-DEBUG] Animation GLB scene hierarchy:`);
+            // Step 1: Filter to quaternion-only tracks.
+            // Position/scale tracks encode source skeleton dimensions — must remove.
+            const origTrackCount = retargetedClip.tracks.length;
+            retargetedClip.tracks = retargetedClip.tracks.filter(track => {
+              const parts = track.name.split('.');
+              const nodeName = parts[0];
+              const prop = parts[parts.length - 1];
+              if (nodeName === 'Armature') return false;
+              if (prop === 'position') return false;
+              if (prop === 'scale') return false;
+              // Skip finger bones (body has simplified hands)
+              if (nodeName.match(/Thumb|Index[0-9]|Middle[0-9]|Ring[0-9]|Pinky[0-9]/)) return false;
+              return true;
+            });
+
+            // Step 2: Hips rest-pose correction.
+            // Animation and body skeletons may have different Hips rest rotations.
+            // Compute delta and pre-multiply into all Hips keyframes.
+            const model = modelRef.current;
+            let bodyHipsBone: THREE.Bone | null = null;
+            if (model) {
+              model.traverse((child: any) => {
+                if (child instanceof THREE.SkinnedMesh && child.skeleton) {
+                  for (const bone of child.skeleton.bones) {
+                    if (bone.name.toLowerCase().includes('hips')) {
+                      bodyHipsBone = bone;
+                    }
+                  }
+                }
+              });
+            }
+
+            if (bodyHipsBone) {
+              // Find animation's Hips rest pose from the GLB scene nodes
+              let animHipsRest = new THREE.Quaternion();
               gltf.scene.traverse((node: any) => {
-                const parentName = node.parent ? node.parent.name : 'NONE';
-                const q = node.quaternion;
-                console.log(`[ANIM-DEBUG]   ${node.name} (parent: ${parentName}) quat=[${q.x.toFixed(4)},${q.y.toFixed(4)},${q.z.toFixed(4)},${q.w.toFixed(4)}]`);
+                if (node.name && node.name.toLowerCase().includes('hips')) {
+                  animHipsRest.copy(node.quaternion);
+                }
               });
 
-              const filteredTracks: THREE.KeyframeTrack[] = [];
-              for (const track of rawClip.tracks) {
-                if (!track.name.endsWith('.quaternion')) continue;
-                const boneName = track.name.replace('.quaternion', '');
-                if (!bodyBones[boneName]) continue;
-                if (boneName.match(/Thumb|Index[0-9]|Middle[0-9]|Ring[0-9]|Pinky[0-9]/)) continue;
+              const templateHipsRest = (bodyHipsBone as THREE.Bone).quaternion.clone();
+              const correction = templateHipsRest.clone().multiply(animHipsRest.clone().invert());
 
-                // Debug: log first keyframe for key bones
-                if (['mixamorigHips', 'mixamorigLeftArm', 'mixamorigLeftUpLeg'].includes(boneName)) {
-                  const v = track.values;
-                  const bodyRest = bodyBones[boneName];
-                  console.log(`[ANIM-DEBUG] ${boneName}: frame0=[${v[0].toFixed(4)},${v[1].toFixed(4)},${v[2].toFixed(4)},${v[3].toFixed(4)}] bodyRest=[${bodyRest.x.toFixed(4)},${bodyRest.y.toFixed(4)},${bodyRest.z.toFixed(4)},${bodyRest.w.toFixed(4)}]`);
+              const isIdentity = Math.abs(correction.x) < 0.01 && Math.abs(correction.y) < 0.01 &&
+                                  Math.abs(correction.z) < 0.01 && Math.abs(correction.w - 1) < 0.01;
+
+              console.log(`[ModelViewer] Hips correction: identity=${isIdentity} correction=[${correction.x.toFixed(4)},${correction.y.toFixed(4)},${correction.z.toFixed(4)},${correction.w.toFixed(4)}]`);
+              console.log(`[ModelViewer]   templateHipsRest=[${templateHipsRest.x.toFixed(4)},${templateHipsRest.y.toFixed(4)},${templateHipsRest.z.toFixed(4)},${templateHipsRest.w.toFixed(4)}]`);
+              console.log(`[ModelViewer]   animHipsRest=[${animHipsRest.x.toFixed(4)},${animHipsRest.y.toFixed(4)},${animHipsRest.z.toFixed(4)},${animHipsRest.w.toFixed(4)}]`);
+
+              if (!isIdentity) {
+                // Find Hips track
+                const hipsTrack = retargetedClip.tracks.find(t =>
+                  t.name.toLowerCase().includes('hips') && t.name.endsWith('.quaternion')
+                );
+                if (hipsTrack) {
+                  const v = hipsTrack.values;
+                  const tempQ = new THREE.Quaternion();
+                  for (let i = 0; i < v.length; i += 4) {
+                    tempQ.set(v[i], v[i + 1], v[i + 2], v[i + 3]);
+                    tempQ.premultiply(correction);
+                    v[i] = tempQ.x; v[i + 1] = tempQ.y; v[i + 2] = tempQ.z; v[i + 3] = tempQ.w;
+                  }
+                  console.log(`[ModelViewer] Applied Hips correction to ${v.length / 4} keyframes`);
                 }
-
-                filteredTracks.push(track);
               }
-              console.log(`[ModelViewer] Using ${filteredTracks.length} pre-retargeted tracks (no JS retargeting)`);
-
-              const clip = new THREE.AnimationClip(rawClip.name, rawClip.duration, filteredTracks);
-              animClipsRef.current.set(currentAnimation.id, clip);
-              console.log(`[ModelViewer] Animation loaded: ${currentAnimation.id} (${clip.duration.toFixed(1)}s, ${clip.tracks.length} tracks)`);
-              if (currentAnimation.id === currentAnimIdRef.current) return;
-              playClip(clip);
-            } else {
-              console.warn(`[ModelViewer] No animations found in ${currentAnimation.id}.glb`);
             }
+
+            console.log(`[ModelViewer] Animation "${currentAnimation.id}": ${retargetedClip.tracks.length}/${origTrackCount} tracks, ${retargetedClip.duration.toFixed(1)}s`);
+
+            animClipsRef.current.set(currentAnimation.id, retargetedClip);
+            if (currentAnimation.id === currentAnimIdRef.current) return;
+            playClip(retargetedClip);
           },
           (err) => {
             console.warn(`[ModelViewer] Animation parse error: ${err}`);
