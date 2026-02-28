@@ -14,6 +14,38 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { TextureLoader as ExpoTextureLoader } from "expo-three";
 import { stripEmbeddedTextures } from "../utils/glbPreprocess";
 
+// Per-clothing-item bone coverage (without mixamorig: prefix).
+// Only bones listed here get masked when that item is equipped.
+// Key = mesh name from GLB (lowercase).
+const CLOTHING_BONE_COVERAGE: Record<string, string[]> = {
+  // Tops
+  sweater: [
+    "Spine", "Spine1", "Spine2",
+    "LeftShoulder", "RightShoulder",
+    "LeftArm", "RightArm",
+    "LeftForeArm", "RightForeArm",
+  ],
+  tshirt: [
+    "Spine", "Spine1", "Spine2",
+    "LeftShoulder", "RightShoulder",
+    "LeftArm", "RightArm",
+  ],
+  keyholetank: [
+    "Spine", "Spine1",
+    // Spine2 excluded: tank's neckline exposes upper chest
+  ],
+  // Pants (all cover the same area)
+  pants: ["Hips", "LeftUpLeg", "RightUpLeg", "LeftLeg", "RightLeg"],
+  woolpants: ["Hips", "LeftUpLeg", "RightUpLeg", "LeftLeg", "RightLeg"],
+  harempants: ["Hips", "LeftUpLeg", "RightUpLeg", "LeftLeg", "RightLeg"],
+  cargopants: ["Hips", "LeftUpLeg", "RightUpLeg", "LeftLeg", "RightLeg"],
+  // Shoes (all cover feet)
+  boots: ["LeftFoot", "RightFoot", "LeftToeBase", "RightToeBase"],
+  ankleboots: ["LeftFoot", "RightFoot", "LeftToeBase", "RightToeBase"],
+  balletflats: ["LeftFoot", "RightFoot", "LeftToeBase", "RightToeBase"],
+  booties: ["LeftFoot", "RightFoot", "LeftToeBase", "RightToeBase"],
+};
+
 /* eslint-disable @typescript-eslint/no-require-imports */
 const SKIN_TEXTURE = require("../../assets/textures/skin_diffuse.png");
 const EYE_TEXTURE = require("../../assets/textures/eye_diffuse.png");
@@ -62,6 +94,12 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
   const loadedUriRef = useRef<string | null>(null);
   const clothingGroupRef = useRef<THREE.Group | null>(null);
   const loadedClothingRef = useRef<ClothingItem[]>([]);
+
+  // Body masking: hide body faces under clothing using bone weights
+  const bodyMeshRef = useRef<THREE.SkinnedMesh | null>(null);
+  const originalIndexRef = useRef<Uint16Array | Uint32Array | null>(null);
+  const bodyMaskAppliedRef = useRef(false);
+  const equippedMeshNamesRef = useRef<string[]>([]);
 
   // Animation state
   const mixerRef = useRef<THREE.AnimationMixer | null>(null);
@@ -435,6 +473,18 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
               bodyWorldRestRef.current = worldRest;
               bodyParentWorldRestRef.current = parentWorldRest;
 
+              // Save body SkinnedMesh reference + original index for runtime masking
+              model.traverse((c) => {
+                const sm = c as THREE.SkinnedMesh;
+                if (sm.isSkinnedMesh && (sm.name === "Human" || sm.name === "") && !bodyMeshRef.current) {
+                  bodyMeshRef.current = sm;
+                  if (sm.geometry.index) {
+                    originalIndexRef.current = sm.geometry.index.array.slice() as Uint16Array | Uint32Array;
+                  }
+                  console.log(`[ModelViewer] Saved body mesh ref: "${sm.name}" (${sm.geometry.index?.count ?? 0} indices)`);
+                }
+              });
+
               console.log(`[ModelViewer] Model transform: pos(${model.position.x.toFixed(4)},${model.position.y.toFixed(4)},${model.position.z.toFixed(4)}) scale(${model.scale.x.toFixed(4)})`);
               console.log(`[ModelViewer] Body bbox: min(${box.min.x.toFixed(4)},${box.min.y.toFixed(4)},${box.min.z.toFixed(4)}) max(${box.max.x.toFixed(4)},${box.max.y.toFixed(4)},${box.max.z.toFixed(4)})`);
 
@@ -465,6 +515,120 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
     [onModelLoaded, onError, updateCamera]
   );
 
+  // Apply body mask: hide body faces whose vertices are dominated by "covered" bones
+  const applyBodyMask = useCallback(() => {
+    const bodyMesh = bodyMeshRef.current;
+    const origIndex = originalIndexRef.current;
+    if (!bodyMesh || !origIndex) {
+      console.log("[BodyMask] No body mesh or original index — skipping");
+      return;
+    }
+
+    const geom = bodyMesh.geometry;
+    const skinIndex = geom.getAttribute("skinIndex") as THREE.BufferAttribute;
+    const skinWeight = geom.getAttribute("skinWeight") as THREE.BufferAttribute;
+    if (!skinIndex || !skinWeight) {
+      console.log("[BodyMask] No skinIndex/skinWeight attributes — skipping");
+      return;
+    }
+
+    // Build set of bone indices to hide based on EQUIPPED clothing items
+    const skeleton = bodyMesh.skeleton;
+    const hideBoneIndices = new Set<number>();
+    const boneNameToIdx = new Map<string, number>();
+    for (let i = 0; i < skeleton.bones.length; i++) {
+      boneNameToIdx.set(skeleton.bones[i].name, i);
+    }
+
+    const equipped = equippedMeshNamesRef.current;
+    console.log(`[BodyMask] Equipped items: ${equipped.join(", ")}`);
+
+    for (const meshName of equipped) {
+      const coverage = CLOTHING_BONE_COVERAGE[meshName.toLowerCase()];
+      if (!coverage) {
+        console.log(`[BodyMask] No bone coverage for "${meshName}"`);
+        continue;
+      }
+      for (const boneName of coverage) {
+        // GLB export strips ':' from bone names — try both formats
+        for (const prefix of ["mixamorig:", "mixamorig"]) {
+          const idx = boneNameToIdx.get(`${prefix}${boneName}`);
+          if (idx !== undefined) {
+            hideBoneIndices.add(idx);
+            break;
+          }
+        }
+      }
+    }
+    console.log(`[BodyMask] Hide bones: ${hideBoneIndices.size} of ${skeleton.bones.length}`);
+
+    // Mark vertices where ALL significant bone influences are in the hide set.
+    // This is conservative: boundary vertices (e.g. neck with mixed Spine2+Neck
+    // weights) stay visible because Neck is NOT in the hide set.
+    const vertexCount = skinIndex.count;
+    const hideVertex = new Uint8Array(vertexCount); // 1 = hide
+    let hiddenCount = 0;
+    const WEIGHT_THRESHOLD = 0.01; // Ignore bones with < 1% influence
+
+    for (let v = 0; v < vertexCount; v++) {
+      let allHidden = true;
+      let hasWeight = false;
+      for (let j = 0; j < 4; j++) {
+        const w = skinWeight.getComponent(v, j);
+        if (w > WEIGHT_THRESHOLD) {
+          hasWeight = true;
+          const bone = skinIndex.getComponent(v, j);
+          if (!hideBoneIndices.has(bone)) {
+            allHidden = false;
+            break;
+          }
+        }
+      }
+      if (hasWeight && allHidden) {
+        hideVertex[v] = 1;
+        hiddenCount++;
+      }
+    }
+    console.log(`[BodyMask] Hidden vertices: ${hiddenCount}/${vertexCount}`);
+
+    // Rewrite index buffer in-place: kept faces first, then degenerate triangles
+    const faceCount = origIndex.length / 3;
+    const indexAttr = geom.getIndex();
+    if (!indexAttr) {
+      console.log("[BodyMask] No index attribute — skipping");
+      return;
+    }
+
+    // Build new ordering: non-hidden faces first
+    let writePos = 0;
+    let removedFaces = 0;
+
+    for (let f = 0; f < faceCount; f++) {
+      const a = origIndex[f * 3];
+      const b = origIndex[f * 3 + 1];
+      const c = origIndex[f * 3 + 2];
+      if (hideVertex[a] && hideVertex[b] && hideVertex[c]) {
+        removedFaces++;
+      } else {
+        indexAttr.array[writePos++] = a;
+        indexAttr.array[writePos++] = b;
+        indexAttr.array[writePos++] = c;
+      }
+    }
+
+    // Fill remaining with degenerate triangles (won't render)
+    for (let i = writePos; i < origIndex.length; i++) {
+      indexAttr.array[i] = 0;
+    }
+
+    const keptFaces = (faceCount - removedFaces);
+    console.log(`[BodyMask] Faces: ${faceCount} total, ${removedFaces} removed, ${keptFaces} kept`);
+
+    indexAttr.needsUpdate = true;
+    geom.setDrawRange(0, keptFaces * 3);
+    bodyMaskAppliedRef.current = true;
+  }, []);
+
   // Load clothing GLBs with external textures into the model group
   const loadClothingGLBs = useCallback(
     (items: ClothingItem[]) => {
@@ -482,6 +646,19 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
 
       const gltfLoader = new GLTFLoader();
       const texLoader = new ExpoTextureLoader();
+
+      let loadedCount = 0;
+      const totalItems = items.length;
+      const clothingMeshNames: string[] = [];
+      const onItemLoaded = () => {
+        loadedCount++;
+        if (loadedCount >= totalItems) {
+          // All clothing loaded — store mesh names and apply body mask
+          equippedMeshNamesRef.current = clothingMeshNames;
+          console.log(`[ModelViewer] All ${totalItems} clothing items loaded, applying body mask`);
+          applyBodyMask();
+        }
+      };
 
       for (const item of items) {
         // Load texture and GLB in parallel
@@ -514,18 +691,15 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
 
                 const clothingMeshes: THREE.Mesh[] = [];
 
-                // Find body skeleton and its bind matrix for rebinding clothing
+                // Find body skeleton for rebinding clothing
                 let bodySkeleton: THREE.Skeleton | null = null;
-                let bodyBindMatrix: THREE.Matrix4 | null = null;
                 model.traverse((child) => {
                   if ((child as THREE.SkinnedMesh).isSkinnedMesh && !bodySkeleton) {
-                    const bodyMesh = child as THREE.SkinnedMesh;
-                    bodySkeleton = bodyMesh.skeleton;
-                    bodyBindMatrix = bodyMesh.bindMatrix.clone();
+                    bodySkeleton = (child as THREE.SkinnedMesh).skeleton;
                   }
                 });
 
-                // Apply external texture and push clothing outward along normals
+                // Apply texture and rebind clothing to body skeleton
                 clothingScene.traverse((child) => {
                   if (child instanceof THREE.Mesh) {
                     child.material = new THREE.MeshStandardMaterial({
@@ -534,57 +708,22 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
                       metalness: 0.0,
                     });
 
-                    // Push clothing outward along normals to prevent skin poke-through
-                    const geo = child.geometry;
-                    const pos = geo.getAttribute("position");
-                    const norm = geo.getAttribute("normal");
-                    if (pos && norm) {
-                      const offset = 0.008;
-                      for (let i = 0; i < pos.count; i++) {
-                        pos.setX(i, pos.getX(i) + norm.getX(i) * offset);
-                        pos.setY(i, pos.getY(i) + norm.getY(i) * offset);
-                        pos.setZ(i, pos.getZ(i) + norm.getZ(i) * offset);
-                      }
-                      pos.needsUpdate = true;
-                    }
-
-                    // Rebind clothing SkinnedMesh to body skeleton so animation drives clothing too
                     const skinnedChild = child as THREE.SkinnedMesh;
-                    if (skinnedChild.isSkinnedMesh && bodySkeleton && bodyBindMatrix) {
-                      // Remap clothing bone indices to match body skeleton ordering.
-                      // Each GLB can have different joint orderings, so skinIndex values
-                      // from the clothing GLB need to be translated to body skeleton indices.
-                      const clothingSkeleton = skinnedChild.skeleton;
-                      const indexMap = new Map<number, number>();
-                      clothingSkeleton.bones.forEach((clothingBone, clothingIdx) => {
-                        const bodyIdx = bodySkeleton!.bones.findIndex(
-                          (b) => b.name === clothingBone.name
-                        );
-                        if (bodyIdx >= 0) {
-                          indexMap.set(clothingIdx, bodyIdx);
+                    if (skinnedChild.isSkinnedMesh && bodySkeleton) {
+                      // Rebind clothing to body skeleton with body's bind matrix
+                      let bodyBindMatrix: THREE.Matrix4 | null = null;
+                      model.traverse((c) => {
+                        const sm = c as THREE.SkinnedMesh;
+                        if (sm.isSkinnedMesh && sm.name === "Human" && !bodyBindMatrix) {
+                          bodyBindMatrix = sm.bindMatrix;
                         }
                       });
-
-                      const skinIndex = skinnedChild.geometry.getAttribute("skinIndex");
-                      if (skinIndex) {
-                        for (let i = 0; i < skinIndex.count; i++) {
-                          for (let j = 0; j < skinIndex.itemSize; j++) {
-                            const oldIdx = skinIndex.getComponent(i, j);
-                            const newIdx = indexMap.get(oldIdx);
-                            if (newIdx !== undefined) {
-                              skinIndex.setComponent(i, j, newIdx);
-                            }
-                          }
-                        }
-                        skinIndex.needsUpdate = true;
+                      if (bodyBindMatrix) {
+                        skinnedChild.bind(bodySkeleton, bodyBindMatrix);
+                      } else {
+                        skinnedChild.skeleton = bodySkeleton;
                       }
-
-                      // CRITICAL: Pass bindMatrix explicitly to prevent bind() from calling
-                      // skeleton.calculateInverses(). Without this, each clothing rebind
-                      // recalculates bone inverses from the current animated pose, corrupting
-                      // the shared skeleton for ALL meshes.
-                      skinnedChild.bind(bodySkeleton, bodyBindMatrix);
-                      console.log(`[ModelViewer] Rebound clothing "${child.name}" to body skeleton (remapped ${indexMap.size} bone indices)`);
+                      console.log(`[ModelViewer] Rebound "${child.name}" to body skeleton`);
                     }
 
                     const hasMorphs = child.morphTargetDictionary && child.morphTargetInfluences;
@@ -592,6 +731,10 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
                       clothingMeshes.push(child);
                     }
 
+                    // Track mesh name for per-item body masking
+                    if (child.name) {
+                      clothingMeshNames.push(child.name);
+                    }
                     console.log(`[ModelViewer] Clothing mesh: "${child.name}" (skinned: ${skinnedChild.isSkinnedMesh || false}, morphs: ${hasMorphs ? Object.keys(child.morphTargetDictionary!).length : 0})`);
                   }
                 });
@@ -600,20 +743,24 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
                 if (clothingMeshes.length > 0 && onClothingMeshesLoaded) {
                   onClothingMeshesLoaded(clothingMeshes);
                 }
+
+                onItemLoaded();
               },
               (err) => {
                 console.warn(`[ModelViewer] Clothing parse error: ${err}`);
+                onItemLoaded(); // Count failures too
               }
             );
           })
           .catch((err) => {
             console.warn(`[ModelViewer] Clothing fetch error: ${err}`);
+            onItemLoaded(); // Count failures too
           });
       }
 
       loadedClothingRef.current = items;
     },
-    []
+    [applyBodyMask]
   );
 
   // React to clothingItems changes
@@ -781,38 +928,11 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
       // Animation loop
       const animate = () => {
         animRef.current = requestAnimationFrame(animate);
+
         // Update skeletal animation mixer
         if (mixerRef.current) {
           const delta = clockRef.current.getDelta();
           mixerRef.current.update(delta);
-          // DEBUG: log bone quaternions periodically during animation
-          if (currentActionRef.current && modelRef.current) {
-            const frameCount = (animate as any).__debugFrame = ((animate as any).__debugFrame || 0) + 1;
-            if (frameCount === 5) { // Log once near start
-              modelRef.current.traverse((child: any) => {
-                if (child instanceof THREE.SkinnedMesh) {
-                  for (const bone of child.skeleton.bones) {
-                    if (bone.name.includes('LeftArm') && !bone.name.includes('Fore')) {
-                      const q = bone.quaternion;
-                      const wp = new THREE.Vector3();
-                      bone.getWorldPosition(wp);
-                      console.log(`[ANIM-DEBUG] LeftArm quaternion: [${q.x.toFixed(4)},${q.y.toFixed(4)},${q.z.toFixed(4)},${q.w.toFixed(4)}]`);
-                      console.log(`[ANIM-DEBUG] LeftArm worldPos: [${wp.x.toFixed(4)},${wp.y.toFixed(4)},${wp.z.toFixed(4)}]`);
-                      // Also log parent
-                      if (bone.parent) {
-                        const pq = bone.parent.quaternion;
-                        console.log(`[ANIM-DEBUG] ${bone.parent.name} quaternion: [${pq.x.toFixed(4)},${pq.y.toFixed(4)},${pq.z.toFixed(4)},${pq.w.toFixed(4)}]`);
-                      }
-                    }
-                    if (bone.name.includes('Hips')) {
-                      const q = bone.quaternion;
-                      console.log(`[ANIM-DEBUG] Hips quaternion: [${q.x.toFixed(4)},${q.y.toFixed(4)},${q.z.toFixed(4)},${q.w.toFixed(4)}]`);
-                    }
-                  }
-                }
-              });
-            }
-          }
         }
         renderer.render(scene, camera);
         gl.endFrameEXP();

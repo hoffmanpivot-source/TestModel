@@ -95,11 +95,8 @@ CURATED_TARGETS = [
     "breast/breast-trans-down",
     "breast/breast-volume-vert-up",
     "breast/breast-volume-vert-down",
-    # Breast-size/firmness from .target files (female-young-averagemuscle-averageweight variant)
-    "breast/female-young-averagemuscle-averageweight-maxcup-averagefirmness",
-    "breast/female-young-averagemuscle-averageweight-mincup-averagefirmness",
-    "breast/female-young-averagemuscle-averageweight-averagecup-maxfirmness",
-    "breast/female-young-averagemuscle-averageweight-averagecup-minfirmness",
+    # NOTE: breast-size/firmness created as composites from MPFB2 shape key capture
+    # (capture_breast_deltas_from_mpfb2), not from raw .target files
 ]
 
 # Symmetric targets: merge r- and l- variants into a single shape key.
@@ -136,10 +133,7 @@ SYMMETRIC_TARGETS = [
 
 # Rename long combo target filenames to clean shape key names
 TARGET_NAME_OVERRIDES = {
-    "female-young-averagemuscle-averageweight-maxcup-averagefirmness": "breast-size-incr",
-    "female-young-averagemuscle-averageweight-mincup-averagefirmness": "breast-size-decr",
-    "female-young-averagemuscle-averageweight-averagecup-maxfirmness": "breast-firmness-incr",
-    "female-young-averagemuscle-averageweight-averagecup-minfirmness": "breast-firmness-decr",
+    # breast-size/firmness morphs are created by capture_breast_deltas_from_mpfb2()
 }
 
 
@@ -671,91 +665,123 @@ def transfer_morphs_to_clothing(asset_obj, vertex_mappings, all_morph_deltas, ba
 def capture_breast_deltas_from_mpfb2(basemesh):
     """Capture breast morph deltas from MPFB2's shape keys by reading vertex data directly.
 
-    Instead of using the depsgraph (which is non-deterministic and often returns garbage),
-    this reads shape key vertex positions directly from shape_key.data[i].co and computes
-    deltas against the Basis key. This is 100% deterministic and reliable.
+    MPFB2 doesn't create cup/firmness shape keys by default — they only appear when
+    the parameter is changed from 0.5. This function temporarily sets each parameter
+    to max, captures the resulting shape key deltas, then restores the original values.
 
-    Must be called BEFORE removing MPFB2's default shape keys.
+    reapply_macro_details replaces ALL shape keys each time, so we must capture
+    deltas immediately after each parameter change before the next reapply.
+
+    Must be called BEFORE adding rig (add_builtin_rig removes MPFB2's shape keys).
     Returns dict of {morph_name: {vertex_index: (dx, dy, dz)}} on the ORIGINAL mesh.
     """
-
-    if not basemesh.data.shape_keys:
-        print("  WARNING: No shape keys found for breast capture")
+    try:
+        from bl_ext.blender_org.mpfb.services.targetservice import TargetService
+    except ImportError:
+        print("  WARNING: TargetService not available")
         return {}
 
-    keys = basemesh.data.shape_keys.key_blocks
+    original_cupsize = basemesh.MPFB_HUM_cupsize
+    original_firmness = basemesh.MPFB_HUM_firmness
+    print(f"  Current cupsize={original_cupsize}, firmness={original_firmness}")
+
     num_verts = len(basemesh.data.vertices)
-
-    # First key is always Basis
-    basis_key = keys[0]
-
-    # Find cup and firmness shape keys by pattern matching
-    cup_key = None
-    firm_key = None
-    for sk in keys:
-        name = sk.name.lower()
-        if "maxcup" in name:
-            cup_key = sk
-        if "max$fi" in name or "maxfirmness" in name:
-            firm_key = sk
-
-    print(f"  Basis key: {basis_key.name}")
-    print(f"  Cup key: {cup_key.name}" if cup_key else "  Cup key: NOT FOUND")
-    print(f"  Firm key: {firm_key.name}" if firm_key else "  Firm key: NOT FOUND")
-
-    if not cup_key:
-        print("  WARNING: Cannot find cupsize shape key, falling back to target files")
-        return {}
-
     result = {}
 
-    # Get basis vertex positions for spatial filtering (Blender Z-up)
-    z_values = [basis_key.data[i].co.z for i in range(num_verts)]
-    z_min = min(z_values)
-    z_max = max(z_values)
-    z_range = z_max - z_min
-    chest_z_low = z_min + z_range * 0.40   # below navel
-    chest_z_high = z_min + z_range * 0.75  # above shoulders
-    print(f"  Breast region filter: z={chest_z_low:.4f} to {chest_z_high:.4f} (model z={z_min:.4f}-{z_max:.4f})")
+    def get_basis_and_target(param_name, param_value):
+        """Set a parameter, reapply, find the new shape key, extract deltas."""
+        # Reset to defaults first
+        basemesh.MPFB_HUM_cupsize = original_cupsize
+        basemesh.MPFB_HUM_firmness = original_firmness
 
-    def extract_deltas(shape_key, spatial_filter=False):
-        """Read shape key vertex data directly and compute deltas against basis.
-        Bypasses depsgraph entirely — 100% deterministic.
-        If spatial_filter=True, only include vertices in the chest/breast region."""
-        offsets = {}
-        for i in range(num_verts):
-            sk_co = shape_key.data[i].co
-            b_co = basis_key.data[i].co
-            dx = sk_co.x - b_co.x
-            dy = sk_co.y - b_co.y
-            dz = sk_co.z - b_co.z
-            if abs(dx) > 1e-6 or abs(dy) > 1e-6 or abs(dz) > 1e-6:
-                if spatial_filter:
+        # Set the target parameter
+        setattr(basemesh, param_name, param_value)
+        TargetService.reapply_macro_details(basemesh)
+
+        if not basemesh.data.shape_keys:
+            return None, None
+
+        keys = basemesh.data.shape_keys.key_blocks
+        basis = keys[0]
+        return basis, keys
+
+    # --- Pass 1: Capture cup (breast-size) deltas ---
+    print("  Pass 1: cupsize=1.0...")
+    basis, keys = get_basis_and_target("MPFB_HUM_cupsize", 1.0)
+    if basis and keys:
+        # Find the maxcup key (created by setting cupsize to max)
+        cup_key = None
+        for sk in keys:
+            if "maxcup" in sk.name.lower():
+                cup_key = sk
+                break
+        if cup_key:
+            print(f"    Cup key: {cup_key.name}")
+            # Spatial filter setup
+            z_values = [basis.data[i].co.z for i in range(num_verts)]
+            z_min, z_max = min(z_values), max(z_values)
+            z_range = z_max - z_min
+            chest_z_low = z_min + z_range * 0.40
+            chest_z_high = z_min + z_range * 0.75
+            print(f"    Breast region: z={chest_z_low:.4f} to {chest_z_high:.4f}")
+
+            cup_offsets = {}
+            for i in range(num_verts):
+                sk_co = cup_key.data[i].co
+                b_co = basis.data[i].co
+                dx, dy, dz = sk_co.x - b_co.x, sk_co.y - b_co.y, sk_co.z - b_co.z
+                if abs(dx) > 1e-6 or abs(dy) > 1e-6 or abs(dz) > 1e-6:
                     if b_co.z < chest_z_low or b_co.z > chest_z_high:
                         continue
-                offsets[i] = (float(dx), float(dy), float(dz))
-        return offsets
+                    cup_offsets[i] = (float(dx), float(dy), float(dz))
 
-    # Capture breast-size-incr: read cup shape key data directly (no depsgraph)
-    cup_offsets = extract_deltas(cup_key, spatial_filter=True)
-    result["breast-size-incr"] = cup_offsets
-    print(f"  breast-size-incr: {len(cup_offsets)} vertices affected (chest-filtered)")
+            result["breast-size-incr"] = cup_offsets
+            result["breast-size-decr"] = {i: (-dx, -dy, -dz) for i, (dx, dy, dz) in cup_offsets.items()}
+            print(f"    breast-size-incr: {len(cup_offsets)} vertices (chest-filtered)")
+            print(f"    breast-size-decr: {len(cup_offsets)} vertices (negated)")
+        else:
+            print("    WARNING: maxcup key not found after setting cupsize=1.0")
 
-    # breast-size-decr: negate the incr deltas (no mincup key available)
-    decr_offsets = {i: (-dx, -dy, -dz) for i, (dx, dy, dz) in cup_offsets.items()}
-    result["breast-size-decr"] = decr_offsets
-    print(f"  breast-size-decr: {len(decr_offsets)} vertices (negated incr)")
+    # --- Pass 2: Capture firmness deltas ---
+    print("  Pass 2: firmness=1.0...")
+    basis, keys = get_basis_and_target("MPFB_HUM_firmness", 1.0)
+    if basis and keys:
+        firm_key = None
+        for sk in keys:
+            name = sk.name.lower()
+            if "max$fi" in name or "maxfirmness" in name:
+                firm_key = sk
+                break
+        if firm_key:
+            print(f"    Firm key: {firm_key.name}")
+            z_values = [basis.data[i].co.z for i in range(num_verts)]
+            z_min, z_max = min(z_values), max(z_values)
+            z_range = z_max - z_min
+            chest_z_low = z_min + z_range * 0.40
+            chest_z_high = z_min + z_range * 0.75
 
-    # Capture breast-firmness-incr: read firmness shape key data directly
-    if firm_key:
-        firm_offsets = extract_deltas(firm_key, spatial_filter=True)
-        result["breast-firmness-incr"] = firm_offsets
-        print(f"  breast-firmness-incr: {len(firm_offsets)} vertices affected (chest-filtered)")
+            firm_offsets = {}
+            for i in range(num_verts):
+                sk_co = firm_key.data[i].co
+                b_co = basis.data[i].co
+                dx, dy, dz = sk_co.x - b_co.x, sk_co.y - b_co.y, sk_co.z - b_co.z
+                if abs(dx) > 1e-6 or abs(dy) > 1e-6 or abs(dz) > 1e-6:
+                    if b_co.z < chest_z_low or b_co.z > chest_z_high:
+                        continue
+                    firm_offsets[i] = (float(dx), float(dy), float(dz))
 
-        # breast-firmness-decr: negate firmness incr
-        firm_decr = {i: (-dx, -dy, -dz) for i, (dx, dy, dz) in firm_offsets.items()}
-        result["breast-firmness-decr"] = firm_decr
-        print(f"  breast-firmness-decr: {len(firm_decr)} vertices (negated incr)")
+            result["breast-firmness-incr"] = firm_offsets
+            result["breast-firmness-decr"] = {i: (-dx, -dy, -dz) for i, (dx, dy, dz) in firm_offsets.items()}
+            print(f"    breast-firmness-incr: {len(firm_offsets)} vertices (chest-filtered)")
+            print(f"    breast-firmness-decr: {len(firm_offsets)} vertices (negated)")
+        else:
+            print("    WARNING: maxfirmness key not found after setting firmness=1.0")
+
+    # Restore original parameter values
+    basemesh.MPFB_HUM_cupsize = original_cupsize
+    basemesh.MPFB_HUM_firmness = original_firmness
+    TargetService.reapply_macro_details(basemesh)
+    print(f"  Restored cupsize={original_cupsize}, firmness={original_firmness}")
 
     return result
 
@@ -1145,7 +1171,219 @@ def load_system_assets(basemesh):
     return loaded
 
 
-def export_clothing_items(basemesh, all_morph_deltas=None, armature_object=None):
+def transfer_bone_weights_via_mappings(asset_obj, vertex_mappings, weight_mesh, old_to_new):
+    """Transfer bone weights from weight_mesh to clothing using mhclo vertex mappings.
+
+    Uses the exact barycentric correspondences from .mhclo files instead of
+    spatial proximity (Data Transfer modifier), giving much more accurate results.
+
+    vertex_mappings: list of mappings from parse_mhclo (1:1 or barycentric)
+    weight_mesh: the mesh with bone weights (e.g. Mixamo-rigged body, body-only verts)
+    old_to_new: dict mapping original MPFB2 vertex indices to body-only indices
+    """
+    # Build a map of bone weights per vertex on weight_mesh
+    # For each vertex group (bone), get weights for all vertices
+    bone_names = [vg.name for vg in weight_mesh.vertex_groups]
+
+    # Create vertex groups on clothing for each bone
+    for bn in bone_names:
+        if not asset_obj.vertex_groups.get(bn):
+            asset_obj.vertex_groups.new(name=bn)
+
+    # For each clothing vertex, interpolate bone weights from mapped body vertices
+    transferred = 0
+    for cloth_idx in range(min(len(vertex_mappings), len(asset_obj.data.vertices))):
+        mapping = vertex_mappings[cloth_idx]
+
+        # Get body vertex indices and weights from mapping
+        if len(mapping) == 1:
+            body_indices = [mapping[0]]
+            bary_weights = [1.0]
+        elif len(mapping) == 9:
+            body_indices = [int(mapping[0]), int(mapping[1]), int(mapping[2])]
+            bary_weights = [mapping[3], mapping[4], mapping[5]]
+        else:
+            continue
+
+        # Convert from MPFB2 full indices to body-only indices
+        mapped_indices = []
+        mapped_bary = []
+        for bi, bw in zip(body_indices, bary_weights):
+            new_idx = old_to_new.get(bi)
+            if new_idx is not None and new_idx < len(weight_mesh.data.vertices):
+                mapped_indices.append(new_idx)
+                mapped_bary.append(bw)
+
+        if not mapped_indices:
+            continue
+
+        # Normalize barycentric weights
+        total_w = sum(mapped_bary)
+        if total_w < 1e-6:
+            continue
+        mapped_bary = [w / total_w for w in mapped_bary]
+
+        # Interpolate bone weights from the mapped body vertices
+        bone_weight_sum = {}
+        for body_idx, bary_w in zip(mapped_indices, mapped_bary):
+            body_vert = weight_mesh.data.vertices[body_idx]
+            for g in body_vert.groups:
+                vg = weight_mesh.vertex_groups[g.group]
+                bone_weight_sum[vg.name] = bone_weight_sum.get(vg.name, 0.0) + g.weight * bary_w
+
+        # Assign interpolated weights to clothing vertex
+        for bn, w in bone_weight_sum.items():
+            if w > 0.001:
+                vg = asset_obj.vertex_groups.get(bn)
+                if vg:
+                    vg.add([cloth_idx], w, 'REPLACE')
+                    transferred += 1
+
+    # Smooth bone weights to reduce tearing at bone boundaries.
+    # Adjacent clothing vertices can get very different weights from barycentric
+    # interpolation when they straddle bone boundaries, causing mesh tearing.
+    if transferred > 0:
+        import bmesh
+        bm = bmesh.new()
+        bm.from_mesh(asset_obj.data)
+        bm.verts.ensure_lookup_table()
+
+        # Build adjacency lists from mesh edges
+        adjacency = [[] for _ in range(len(bm.verts))]
+        for edge in bm.edges:
+            v0, v1 = edge.verts[0].index, edge.verts[1].index
+            adjacency[v0].append(v1)
+            adjacency[v1].append(v0)
+
+        # Get current weights per vertex
+        num_verts = len(asset_obj.data.vertices)
+        vert_weights = [{} for _ in range(num_verts)]
+        for vg in asset_obj.vertex_groups:
+            bn = vg.name
+            for vi in range(num_verts):
+                try:
+                    w = vg.weight(vi)
+                    if w > 0.001:
+                        vert_weights[vi][bn] = w
+                except RuntimeError:
+                    pass
+
+        # Laplacian smooth: blend each vertex with its neighbors (2 iterations)
+        smooth_factor = 0.4
+        for _iteration in range(5):
+            new_weights = [{} for _ in range(num_verts)]
+            for vi in range(num_verts):
+                neighbors = adjacency[vi] if vi < len(adjacency) else []
+                if not neighbors or not vert_weights[vi]:
+                    new_weights[vi] = dict(vert_weights[vi])
+                    continue
+                # Blend: (1-f)*self + f*avg(neighbors)
+                all_bones = set(vert_weights[vi].keys())
+                for ni in neighbors:
+                    all_bones.update(vert_weights[ni].keys())
+                blended = {}
+                for bn in all_bones:
+                    self_w = vert_weights[vi].get(bn, 0.0)
+                    neighbor_avg = sum(vert_weights[ni].get(bn, 0.0) for ni in neighbors) / len(neighbors)
+                    blended[bn] = (1.0 - smooth_factor) * self_w + smooth_factor * neighbor_avg
+                # Normalize
+                total = sum(blended.values())
+                if total > 0.001:
+                    new_weights[vi] = {bn: w / total for bn, w in blended.items() if w > 0.001}
+                else:
+                    new_weights[vi] = dict(vert_weights[vi])
+            vert_weights = new_weights
+
+        # Write smoothed weights back
+        for vg in asset_obj.vertex_groups:
+            bn = vg.name
+            for vi in range(num_verts):
+                w = vert_weights[vi].get(bn, 0.0)
+                if w > 0.001:
+                    vg.add([vi], w, 'REPLACE')
+                else:
+                    try:
+                        vg.remove([vi])
+                    except RuntimeError:
+                        pass
+
+        # Fix boundary/edge vertices: shift weights toward child bones.
+        # The mhclo mapping sends cuff/hem vertices to body vertices further
+        # UP the limb (e.g., forearm instead of wrist). This makes sleeve
+        # cuffs follow ForeArm bone but NOT the Hand bone, creating gaps.
+        # Fix: for boundary vertices, shift dominant bone weight toward that
+        # bone's child bone in the skeleton hierarchy.
+
+        # Build bone parent→children map from armature
+        armature = asset_obj.parent
+        bone_children = {}  # bone_name → [child_name, ...]
+        if armature and armature.type == 'ARMATURE':
+            for bone in armature.data.bones:
+                if bone.parent:
+                    parent_name = bone.parent.name
+                    if parent_name not in bone_children:
+                        bone_children[parent_name] = []
+                    bone_children[parent_name].append(bone.name)
+
+        # Find boundary vertices (on mesh boundary edges)
+        boundary_verts = set()
+        for edge in bm.edges:
+            if edge.is_boundary:
+                boundary_verts.add(edge.verts[0].index)
+                boundary_verts.add(edge.verts[1].index)
+        # Also include verts within 3 edges of boundary for smoother transition
+        for _ring in range(3):
+            new_boundary = set()
+            for vi in boundary_verts:
+                for ni in adjacency[vi]:
+                    new_boundary.add(ni)
+            boundary_verts.update(new_boundary)
+
+        if boundary_verts and bone_children:
+            boundary_fixed = 0
+            for vi in boundary_verts:
+                weights = vert_weights[vi]
+                if not weights:
+                    continue
+                # Find dominant bone
+                dom_bone = max(weights, key=weights.get)
+                dom_w = weights[dom_bone]
+                # If dominant bone has a child, shift weight toward child
+                children = bone_children.get(dom_bone, [])
+                if not children:
+                    continue
+                # Pick the child that already has the most weight (or first)
+                child_bone = children[0]
+                if len(children) > 1:
+                    child_weights = [(c, weights.get(c, 0.0)) for c in children]
+                    child_bone = max(child_weights, key=lambda x: x[1])[0]
+
+                # Shift: give 40% of dominant weight to child bone
+                shift = dom_w * 0.4
+                new_dom_w = dom_w - shift
+                new_child_w = weights.get(child_bone, 0.0) + shift
+
+                vg_dom = asset_obj.vertex_groups.get(dom_bone)
+                vg_child = asset_obj.vertex_groups.get(child_bone)
+                if not vg_child:
+                    vg_child = asset_obj.vertex_groups.new(name=child_bone)
+                if vg_dom:
+                    vg_dom.add([vi], new_dom_w, 'REPLACE')
+                if vg_child:
+                    vg_child.add([vi], new_child_w, 'REPLACE')
+                boundary_fixed += 1
+
+            if boundary_fixed > 0:
+                print(f"    Fixed {boundary_fixed} boundary vertices "
+                      f"(of {len(boundary_verts)} near edges) — shifted weights toward child bones")
+
+        bm.free()
+
+    return transferred
+
+
+def export_clothing_items(basemesh, all_morph_deltas=None, armature_object=None,
+                          weight_source=None, weight_mesh_mappings=None):
     """Export each clothing item as a separate GLB, fitted to the basemesh.
 
     Must be called while basemesh still has full vertex set (before helper removal).
@@ -1153,6 +1391,10 @@ def export_clothing_items(basemesh, all_morph_deltas=None, armature_object=None)
 
     If all_morph_deltas is provided, morph targets are transferred to clothing
     via barycentric interpolation before export.
+
+    weight_source: optional mesh to use as bone weight source instead of basemesh.
+    Useful when basemesh is a temp MPFB2 mesh (for fitting) but bone weights
+    should come from a different mesh (e.g. Mixamo-rigged body).
 
     Returns (exported_names, all_delete_verts) where all_delete_verts is the union
     of delete_verts from all clothing items (original basemesh vertex indices).
@@ -1177,14 +1419,6 @@ def export_clothing_items(basemesh, all_morph_deltas=None, armature_object=None)
         if not obj_file or not os.path.exists(obj_file):
             print(f"  {name}: no obj file found")
             continue
-
-        # Track delete_verts per category for intersection later
-        for cat_name, items in CLOTHING_CATEGORIES.items():
-            if any(n == name for n, _ in items):
-                category_delete_verts[cat_name].append(delete_verts if delete_verts else set())
-                if delete_verts:
-                    print(f"  {name}: {len(delete_verts)} delete_verts from .mhclo ({cat_name})")
-                break
 
         # Find texture
         tex_file = None
@@ -1252,15 +1486,17 @@ def export_clothing_items(basemesh, all_morph_deltas=None, armature_object=None)
             mesh_data = asset_obj.data
             name_lower = name.lower()
             if any(kw in name_lower for kw in ("sweater", "jacket")):
-                offset_amount = 0.020  # thick outer layer — must clear pants waistband
+                offset_amount = 0.035  # thick outer layer — must clear pants waistband
             elif any(kw in name_lower for kw in ("camisole", "shirt", "top", "blouse", "tank")):
-                offset_amount = 0.003  # thin tops / tanks — close to body
+                offset_amount = 0.012  # thin tops / tanks
             elif any(kw in name_lower for kw in ("boot", "shoe", "flat", "bootie")):
-                offset_amount = 0.010  # footwear
-            elif "cargo" in name_lower:
-                offset_amount = 0.015  # sparse low-poly mesh needs bigger offset
+                offset_amount = 0.030  # footwear — needs large offset for foot poke-through
+            elif any(kw in name_lower for kw in ("cargo",)):
+                offset_amount = 0.030  # sparse low-poly mesh needs bigger offset
+            elif any(kw in name_lower for kw in ("pant", "harem")):
+                offset_amount = 0.025  # pants need extra offset for knee bends during animation
             else:
-                offset_amount = 0.008  # inner layer (pants, etc.)
+                offset_amount = 0.015  # default inner layer
             for v in mesh_data.vertices:
                 n = v.normal
                 if n.length > 0.001:
@@ -1268,24 +1504,75 @@ def export_clothing_items(basemesh, all_morph_deltas=None, armature_object=None)
             mesh_data.update()
             print(f"  {name}: pushed {len(mesh_data.vertices)} vertices outward by {offset_amount}")
 
+            # Generate delete_verts from proximity if mhclo doesn't provide them.
+            # For each body vertex, check if a nearby clothing vertex exists.
+            if not delete_verts and vertex_mappings:
+                from mathutils.kdtree import KDTree as KDTreeMU
+                kd_cloth = KDTreeMU(len(asset_obj.data.vertices))
+                for cv in asset_obj.data.vertices:
+                    kd_cloth.insert(cv.co, cv.index)
+                kd_cloth.balance()
+
+                threshold = offset_amount + 0.01  # slightly beyond offset
+                vg_body = basemesh.vertex_groups.get("body")
+                if vg_body:
+                    vg_idx = vg_body.index
+                    for bv in basemesh.data.vertices:
+                        in_body = any(g.group == vg_idx and g.weight > 0.5
+                                      for g in bv.groups)
+                        if in_body:
+                            _co, _idx, dist = kd_cloth.find(bv.co)
+                            if dist < threshold:
+                                delete_verts.add(bv.index)
+                    if delete_verts:
+                        print(f"  {name}: generated {len(delete_verts)} delete_verts "
+                              f"from proximity (threshold={threshold:.4f})")
+
+            # Track delete_verts per category for intersection (after fitting + generation)
+            for cat_name, items in CLOTHING_CATEGORIES.items():
+                if any(n == name for n, _ in items):
+                    category_delete_verts[cat_name].append(delete_verts if delete_verts else set())
+                    if delete_verts:
+                        print(f"  {name}: {len(delete_verts)} delete_verts ({cat_name})")
+                    break
+
             # Transfer bone weights from body to clothing for skeletal animation
             if armature_object:
                 asset_obj.parent = armature_object
                 asset_obj.parent_type = 'OBJECT'
-                # Use Data Transfer modifier for weight transfer
-                dt_mod = asset_obj.modifiers.new("DataTransfer", 'DATA_TRANSFER')
-                dt_mod.object = basemesh
-                dt_mod.use_vert_data = True
-                dt_mod.data_types_verts = {'VGROUP_WEIGHTS'}
-                dt_mod.vert_mapping = 'POLYINTERP_NEAREST'
-                bpy.context.view_layer.objects.active = asset_obj
-                bpy.ops.object.datalayout_transfer(modifier=dt_mod.name)
-                bpy.ops.object.modifier_apply(modifier=dt_mod.name)
+
+                used_mhclo = False
+                if weight_mesh_mappings and vertex_mappings:
+                    # Exact transfer via mhclo barycentric mappings (no spatial guessing)
+                    w_mesh, w_old_to_new = weight_mesh_mappings
+                    n_weights = transfer_bone_weights_via_mappings(
+                        asset_obj, vertex_mappings, w_mesh, w_old_to_new)
+                    if n_weights > 0:
+                        print(f"  {name}: transferred {n_weights} bone weight entries via mhclo mappings")
+                        used_mhclo = True
+                    else:
+                        print(f"  {name}: mhclo mapping gave 0 weights, falling back to Data Transfer")
+
+                if not used_mhclo:
+                    # Fallback: spatial proximity via Data Transfer modifier
+                    src = weight_source if weight_source else basemesh
+                    if weight_mesh_mappings and not weight_source:
+                        # Use the weight mesh directly as Data Transfer source
+                        src = weight_mesh_mappings[0]
+                    dt_mod = asset_obj.modifiers.new("DataTransfer", 'DATA_TRANSFER')
+                    dt_mod.object = src
+                    dt_mod.use_vert_data = True
+                    dt_mod.data_types_verts = {'VGROUP_WEIGHTS'}
+                    dt_mod.vert_mapping = 'POLYINTERP_NEAREST'
+                    bpy.context.view_layer.objects.active = asset_obj
+                    bpy.ops.object.datalayout_transfer(modifier=dt_mod.name)
+                    bpy.ops.object.modifier_apply(modifier=dt_mod.name)
+                    vg_count = len(asset_obj.vertex_groups)
+                    print(f"  {name}: transferred {vg_count} bone weight groups via Data Transfer")
+
                 # Add armature modifier
                 arm_mod = asset_obj.modifiers.new("Armature", 'ARMATURE')
                 arm_mod.object = armature_object
-                vg_count = len(asset_obj.vertex_groups)
-                print(f"  {name}: transferred {vg_count} bone weight groups from body")
 
             # Transfer morph targets from body to clothing via barycentric interpolation
             has_morphs = False
@@ -1553,7 +1840,12 @@ def main():
 
     print(f"Base mesh: {basemesh.name}, vertices: {len(basemesh.data.vertices)}")
 
-    # STEP 0-rig: Add Mixamo skeleton rig
+    # STEP 0a: Capture breast deltas from MPFB2's parametric system BEFORE adding rig.
+    # add_builtin_rig() removes MPFB2's shape keys (including maxcup), so capture first.
+    print("\nStep 0a: Capturing breast morphs from MPFB2 parametric system...")
+    breast_deltas = capture_breast_deltas_from_mpfb2(basemesh)
+
+    # STEP 0-rig: Add Mixamo skeleton rig (AFTER breast capture)
     print("\nStep 0-rig: Adding Mixamo skeleton rig...")
     armature_object = None
     if HumanService:
@@ -1569,11 +1861,6 @@ def main():
             traceback.print_exc()
     else:
         print("  SKIPPED: HumanService not available")
-
-    # STEP 0a: Capture breast deltas from MPFB2's parametric system BEFORE removing keys.
-    # This reads shape key vertex data directly (no depsgraph).
-    print("\nStep 0a: Capturing breast morphs from MPFB2 parametric system...")
-    breast_deltas = capture_breast_deltas_from_mpfb2(basemesh)
 
     # STEP 0b: Load system assets (eyes, eyebrows, eyelashes, teeth)
     # Must happen while basemesh still has full vertex set for mhclo fitting
@@ -1782,10 +2069,17 @@ def main():
     print(f"  Rebuilt {len(sk_data)} shape keys on subdivided mesh")
 
     # Re-add Armature modifier after subdivision bake
+    # Note: Step 2 removes ALL modifiers (including the original Armature modifier),
+    # so saved_armature_obj may be None. Use armature_object directly.
     if saved_armature_obj:
         mod = basemesh.modifiers.new(name="Armature", type='ARMATURE')
         mod.object = saved_armature_obj
         print("  Re-added Armature modifier after subdivision bake")
+    elif armature_object:
+        # Armature modifier was lost in Step 2 — re-add it now
+        mod = basemesh.modifiers.new(name="Armature", type='ARMATURE')
+        mod.object = armature_object
+        print("  Re-added Armature modifier (was removed in Step 2)")
 
     # STEP 6: Smooth normals for better appearance
     for obj in [basemesh] + system_assets:
@@ -1818,7 +2112,216 @@ def main():
     file_size = os.path.getsize(OUTPUT_PATH)
     print(f"\nExported: {OUTPUT_PATH}")
     print(f"File size: {file_size / (1024*1024):.1f} MB")
+
+    # STEP 9: Export Mixamo FBX animations as GLBs using the body's armature.
+    # This guarantees bone positions match the body GLB exactly.
+    if armature_object:
+        print("\n" + "=" * 60)
+        print("Step 9: Exporting Mixamo animations from body armature")
+        print("=" * 60)
+        export_mixamo_animations(armature_object)
+
     print("Done!")
+
+
+def export_mixamo_animations(armature_object):
+    """Import Mixamo FBX animations and retarget to body armature.
+
+    Uses manual matrix-based retargeting: for each frame, reads the FBX bone's
+    world-space rotation and computes the body bone's local rotation that
+    produces the same world orientation. This avoids potential issues with
+    NLA bake + GLTF exporter interaction in Blender 5.0.
+
+    FBX armature has +90° X rotation AND 0.1 scale on the object.
+    Body armature has identity object transform.
+    """
+    from mathutils import Matrix, Quaternion
+
+    anim_dir = os.path.join(os.path.dirname(OUTPUT_PATH), "animations")
+    fbx_dir = os.path.join(SCRIPT_DIR, "..", "assets", "models", "animations")
+    os.makedirs(anim_dir, exist_ok=True)
+
+    fbx_files = sorted([f for f in os.listdir(fbx_dir) if f.endswith('.fbx')])
+    if not fbx_files:
+        print("  No FBX files found in animations dir")
+        return
+
+    body_bone_names = set(b.name for b in armature_object.data.bones)
+
+    # Set all body bones to QUATERNION rotation mode
+    for pb in armature_object.pose.bones:
+        pb.rotation_mode = 'QUATERNION'
+
+    # Sort body bones in hierarchy order (parents first)
+    def bone_depth(bone):
+        d = 0
+        b = bone
+        while b.parent:
+            d += 1
+            b = b.parent
+        return d
+
+    body_bones_sorted = sorted(armature_object.pose.bones, key=lambda b: bone_depth(b))
+
+    for fbx_file in fbx_files:
+        anim_name = os.path.splitext(fbx_file)[0]
+        fbx_path = os.path.join(fbx_dir, fbx_file)
+        print(f"\n  Processing: {fbx_file} -> {anim_name}.glb")
+
+        # Clear existing actions
+        for a in list(bpy.data.actions):
+            bpy.data.actions.remove(a)
+
+        # Import FBX
+        bpy.ops.import_scene.fbx(filepath=fbx_path)
+
+        # Find imported armature (and delete any imported meshes)
+        fbx_armature = None
+        fbx_meshes = []
+        for obj in list(bpy.context.scene.objects):
+            if obj == armature_object:
+                continue
+            if obj.type == 'ARMATURE':
+                fbx_armature = obj
+            elif obj.type == 'MESH' and obj.parent and obj.parent.type == 'ARMATURE' and obj.parent != armature_object:
+                fbx_meshes.append(obj)
+
+        # Remove FBX meshes (we only need the armature)
+        for mesh_obj in fbx_meshes:
+            bpy.data.objects.remove(mesh_obj, do_unlink=True)
+
+        if not fbx_armature or not fbx_armature.animation_data or not fbx_armature.animation_data.action:
+            print(f"    WARNING: No animation found in {fbx_file}, skipping")
+            if fbx_armature:
+                bpy.data.objects.remove(fbx_armature, do_unlink=True)
+            continue
+
+        fbx_action = fbx_armature.animation_data.action
+        print(f"    FBX action: {fbx_action.name}")
+
+        # Set frame range
+        frame_start = int(fbx_action.frame_range[0])
+        frame_end = int(fbx_action.frame_range[1])
+        bpy.context.scene.frame_start = frame_start
+        bpy.context.scene.frame_end = frame_end
+        print(f"    Frame range: {frame_start}-{frame_end}")
+
+        # Build set of FBX bone names
+        fbx_bone_names = set(b.name for b in fbx_armature.data.bones)
+        matching_bones = body_bone_names & fbx_bone_names
+        print(f"    Matching bones: {len(matching_bones)} / {len(body_bone_names)} body, {len(fbx_bone_names)} fbx")
+
+        # Ensure body armature is active
+        bpy.ops.object.select_all(action='DESELECT')
+        armature_object.select_set(True)
+        bpy.context.view_layer.objects.active = armature_object
+
+        # Reset body armature to rest pose
+        armature_object.animation_data_clear()
+        for pb in armature_object.pose.bones:
+            pb.rotation_quaternion = Quaternion((1, 0, 0, 0))
+            pb.location = (0, 0, 0)
+            pb.scale = (1, 1, 1)
+        bpy.context.view_layer.update()
+
+        # Basis-correction retargeting: for each frame, read the FBX bone's
+        # matrix_basis (pose delta in FBX bone-local frame), transform it
+        # through a per-bone correction matrix into the body's bone-local
+        # frame, and apply to the body bone.
+        #
+        # The correction accounts for different bone-local coordinate systems
+        # between the FBX armature (Y-up bone axes, -90°X object rotation)
+        # and the body armature (Z-up bone axes, identity object).
+        #
+        # For each bone:
+        #   fbx_world_rest = fbx_arm.matrix_world @ fbx_bone.matrix_local
+        #   body_world_rest = body_arm.matrix_world @ body_bone.matrix_local
+        #   correction = body_world_rest @ fbx_world_rest^-1
+        #   body_basis = correction @ fbx_basis @ correction^-1
+        #
+        # This is a change-of-basis that preserves the physical joint rotation
+        # while accounting for different bone axis conventions.
+
+        # Pre-compute per-bone correction quaternions
+        corrections = {}
+        arm_world = armature_object.matrix_world
+        fbx_world = fbx_armature.matrix_world
+        for body_pb in body_bones_sorted:
+            if body_pb.name not in matching_bones:
+                continue
+            fbx_bone = fbx_armature.data.bones.get(body_pb.name)
+            body_bone = armature_object.data.bones.get(body_pb.name)
+            if not fbx_bone or not body_bone:
+                continue
+            # World-space rest rotations
+            fbx_wr = (fbx_world @ fbx_bone.matrix_local).to_quaternion()
+            body_wr = (arm_world @ body_bone.matrix_local).to_quaternion()
+            # Correction: rotates from FBX bone space to body bone space
+            corrections[body_pb.name] = body_wr @ fbx_wr.inverted()
+
+        print(f"    Computed corrections for {len(corrections)} bones")
+
+        for frame in range(frame_start, frame_end + 1):
+            bpy.context.scene.frame_set(frame)
+
+            for body_pb in body_bones_sorted:
+                if body_pb.name not in matching_bones:
+                    continue
+
+                fbx_pb = fbx_armature.pose.bones[body_pb.name]
+                correction = corrections.get(body_pb.name)
+                if not correction:
+                    continue
+
+                # FBX bone's pose delta (rotation from FBX rest, in FBX bone-local frame)
+                fbx_basis = fbx_pb.matrix_basis.to_quaternion()
+
+                # Transform to body bone-local frame via change-of-basis
+                correction_inv = correction.inverted()
+                body_basis = correction @ fbx_basis @ correction_inv
+
+                body_pb.rotation_quaternion = body_basis
+
+            # Keyframe rotations only
+            for body_pb in body_bones_sorted:
+                if body_pb.name not in matching_bones:
+                    continue
+                body_pb.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+
+        # Ensure action slot is set for Blender 5.0 GLTF exporter
+        if armature_object.animation_data and armature_object.animation_data.action:
+            act = armature_object.animation_data.action
+            if hasattr(act, 'slots') and act.slots:
+                armature_object.animation_data.action_slot = act.slots[0]
+            print(f"    Baked action: {act.name}")
+
+        print(f"    Retargeted {len(matching_bones)} bones over {frame_end - frame_start + 1} frames")
+
+        # Delete FBX armature
+        bpy.data.objects.remove(fbx_armature, do_unlink=True)
+
+        # Export
+        out_path = os.path.join(anim_dir, f"{anim_name}.glb")
+        bpy.ops.export_scene.gltf(
+            filepath=out_path,
+            export_format="GLB",
+            use_selection=True,
+            export_animations=True,
+            export_skins=False,
+            export_morph=False,
+            export_yup=True,
+            export_force_sampling=True,
+            export_optimize_animation_size=True,
+            export_optimize_animation_keep_anim_armature=False,
+        )
+
+        file_size = os.path.getsize(out_path)
+        print(f"    Exported: {out_path} ({file_size / 1024:.0f} KB)")
+
+        # Clean up action from body armature
+        armature_object.animation_data_clear()
+        for a in list(bpy.data.actions):
+            bpy.data.actions.remove(a)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 """
-Create a simple test animation (arm wave) for the Mixamo skeleton.
-This doesn't require Mixamo — just creates keyframes on the Mixamo rig bones directly.
+Create a simple test animation (arm wave) on the MPFB2 Mixamo skeleton.
+Uses the actual MPFB2 rig so bone rest poses match the exported body GLB.
 
 Run: /Applications/Blender.app/Contents/MacOS/Blender --background --python scripts/create_test_animation.py
 Output: assets/models/animations/wave.glb
@@ -9,6 +9,7 @@ Output: assets/models/animations/wave.glb
 import bpy
 import os
 import math
+from mathutils import Euler
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
@@ -16,117 +17,107 @@ OUTPUT_DIR = os.path.join(PROJECT_DIR, "assets", "models", "animations")
 
 
 def create_test_wave():
-    """Create a simple wave animation on a Mixamo armature."""
+    """Create a wave animation on the actual MPFB2 Mixamo armature."""
     # Clear scene
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete()
 
-    # Create a simple armature with Mixamo bone names
-    bpy.ops.object.armature_add()
-    armature = bpy.context.active_object
-    armature.name = "Armature"
+    # Create base human with MPFB2 (same as export_makehuman.py)
+    try:
+        from bl_ext.blender_org.mpfb.services.humanservice import HumanService
+    except ImportError:
+        from mpfb.services.humanservice import HumanService
 
-    # Enter edit mode to set up bones
-    bpy.ops.object.mode_set(mode='EDIT')
-    edit_bones = armature.data.edit_bones
+    print("Creating base human...")
+    basemesh = HumanService.create_human(
+        mask_helpers=True,
+        detailed_helpers=False,
+        extra_vertex_groups=True,
+        feet_on_ground=True,
+        scale=0.1,
+    )
+    print(f"  Base mesh: {basemesh.name}")
 
-    # Remove default bone
-    for b in list(edit_bones):
-        edit_bones.remove(b)
+    # Add Mixamo rig — this gives us the exact same skeleton as the body GLB
+    print("Adding Mixamo rig...")
+    armature_object = HumanService.add_builtin_rig(basemesh, "mixamo", import_weights=True)
+    if not armature_object:
+        print("ERROR: Failed to add Mixamo rig")
+        return None
+    print(f"  Armature: {armature_object.name}, bones: {len(armature_object.data.bones)}")
 
-    # Create Mixamo skeleton bones (simplified — just the ones we need)
-    bone_defs = [
-        ("mixamorig:Hips", None, (0, 0, 1.0), (0, 0, 1.05)),
-        ("mixamorig:Spine", "mixamorig:Hips", (0, 0, 1.05), (0, 0, 1.15)),
-        ("mixamorig:Spine1", "mixamorig:Spine", (0, 0, 1.15), (0, 0, 1.25)),
-        ("mixamorig:Spine2", "mixamorig:Spine1", (0, 0, 1.25), (0, 0, 1.35)),
-        ("mixamorig:Neck", "mixamorig:Spine2", (0, 0, 1.35), (0, 0, 1.45)),
-        ("mixamorig:Head", "mixamorig:Neck", (0, 0, 1.45), (0, 0, 1.6)),
-        # Right arm
-        ("mixamorig:RightShoulder", "mixamorig:Spine2", (0, 0, 1.35), (0.1, 0, 1.35)),
-        ("mixamorig:RightArm", "mixamorig:RightShoulder", (0.1, 0, 1.35), (0.3, 0, 1.35)),
-        ("mixamorig:RightForeArm", "mixamorig:RightArm", (0.3, 0, 1.35), (0.5, 0, 1.35)),
-        ("mixamorig:RightHand", "mixamorig:RightForeArm", (0.5, 0, 1.35), (0.6, 0, 1.35)),
-        # Left arm
-        ("mixamorig:LeftShoulder", "mixamorig:Spine2", (0, 0, 1.35), (-0.1, 0, 1.35)),
-        ("mixamorig:LeftArm", "mixamorig:LeftShoulder", (-0.1, 0, 1.35), (-0.3, 0, 1.35)),
-        ("mixamorig:LeftForeArm", "mixamorig:LeftArm", (-0.3, 0, 1.35), (-0.5, 0, 1.35)),
-        ("mixamorig:LeftHand", "mixamorig:LeftForeArm", (-0.5, 0, 1.35), (-0.6, 0, 1.35)),
-        # Right leg
-        ("mixamorig:RightUpLeg", "mixamorig:Hips", (0.1, 0, 1.0), (0.1, 0, 0.5)),
-        ("mixamorig:RightLeg", "mixamorig:RightUpLeg", (0.1, 0, 0.5), (0.1, 0, 0.1)),
-        ("mixamorig:RightFoot", "mixamorig:RightLeg", (0.1, 0, 0.1), (0.1, 0.1, 0.0)),
-        ("mixamorig:RightToeBase", "mixamorig:RightFoot", (0.1, 0.1, 0.0), (0.1, 0.2, 0.0)),
-        # Left leg
-        ("mixamorig:LeftUpLeg", "mixamorig:Hips", (-0.1, 0, 1.0), (-0.1, 0, 0.5)),
-        ("mixamorig:LeftLeg", "mixamorig:LeftUpLeg", (-0.1, 0, 0.5), (-0.1, 0, 0.1)),
-        ("mixamorig:LeftFoot", "mixamorig:LeftLeg", (-0.1, 0, 0.1), (-0.1, 0.1, 0.0)),
-        ("mixamorig:LeftToeBase", "mixamorig:LeftFoot", (-0.1, 0.1, 0.0), (-0.1, 0.2, 0.0)),
-    ]
+    # Delete the mesh — we only need the armature for the animation GLB
+    bpy.ops.object.select_all(action='DESELECT')
+    basemesh.select_set(True)
+    bpy.ops.object.delete()
 
-    for name, parent_name, head, tail in bone_defs:
-        bone = edit_bones.new(name)
-        bone.head = head
-        bone.tail = tail
-        if parent_name:
-            bone.parent = edit_bones.get(parent_name)
-
-    bpy.ops.object.mode_set(mode='OBJECT')
-
-    # Now create animation in pose mode
+    # Select armature and enter pose mode
+    bpy.context.view_layer.objects.active = armature_object
+    armature_object.select_set(True)
     bpy.ops.object.mode_set(mode='POSE')
-    pose_bones = armature.pose.bones
+    pose_bones = armature_object.pose.bones
 
     # Create action
     action = bpy.data.actions.new(name="wave")
-    armature.animation_data_create()
-    armature.animation_data.action = action
+    armature_object.animation_data_create()
+    armature_object.animation_data.action = action
 
     fps = 30
     bpy.context.scene.render.fps = fps
 
-    # Wave animation: right arm raises and waves back and forth
+    # Use quaternion rotation mode (matches GLTF export)
     right_arm = pose_bones.get("mixamorig:RightArm")
     right_forearm = pose_bones.get("mixamorig:RightForeArm")
-    right_hand = pose_bones.get("mixamorig:RightHand")
 
-    if right_arm and right_forearm:
-        # Frame 0: rest pose (T-pose)
-        bpy.context.scene.frame_set(0)
-        right_arm.rotation_mode = 'XYZ'
-        right_forearm.rotation_mode = 'XYZ'
-        right_arm.rotation_euler = (0, 0, 0)
-        right_forearm.rotation_euler = (0, 0, 0)
-        right_arm.keyframe_insert(data_path="rotation_euler", frame=0)
-        right_forearm.keyframe_insert(data_path="rotation_euler", frame=0)
+    if not right_arm or not right_forearm:
+        print("ERROR: Cannot find RightArm/RightForeArm bones")
+        print(f"  Available bones: {[b.name for b in pose_bones]}")
+        bpy.ops.object.mode_set(mode='OBJECT')
+        return armature_object
 
-        # Frame 10: arm raised up
-        right_arm.rotation_euler = (0, 0, math.radians(-150))  # Raise arm up
-        right_forearm.rotation_euler = (0, 0, math.radians(-30))  # Bend elbow slightly
-        right_arm.keyframe_insert(data_path="rotation_euler", frame=10)
-        right_forearm.keyframe_insert(data_path="rotation_euler", frame=10)
+    # Set rotation mode to quaternion for both bones
+    right_arm.rotation_mode = 'QUATERNION'
+    right_forearm.rotation_mode = 'QUATERNION'
 
-        # Frame 20: wave right
-        right_forearm.rotation_euler = (0, math.radians(30), math.radians(-30))
-        right_forearm.keyframe_insert(data_path="rotation_euler", frame=20)
+    def set_euler_as_quat(bone, euler_xyz_deg, frame):
+        """Convert euler angles (degrees) to quaternion and keyframe."""
+        euler = Euler((math.radians(euler_xyz_deg[0]),
+                       math.radians(euler_xyz_deg[1]),
+                       math.radians(euler_xyz_deg[2])), 'XYZ')
+        bone.rotation_quaternion = euler.to_quaternion()
+        bone.keyframe_insert(data_path="rotation_quaternion", frame=frame)
 
-        # Frame 30: wave left
-        right_forearm.rotation_euler = (0, math.radians(-30), math.radians(-30))
-        right_forearm.keyframe_insert(data_path="rotation_euler", frame=30)
+    # MPFB2 Mixamo rig bone local axes (RightArm):
+    #   local X → world (-0.13, -0.99, 0.01) — points backward
+    #   local Y → world (-0.99, 0.13, 0.01) — points right (along bone)
+    #   local Z → world (0.01, 0.01, -1.0)  — points down
+    # Rest pose is T-pose (arms out to sides).
+    # Negative X rotation → raises arm upward (tip moves away from local Z / up)
+    # Forearm local axes: X=backward (elbow bend), Y=along bone, Z=down (wave)
+    # X rotation on forearm → bends elbow (flexion)
+    # Z rotation on forearm → waves side to side
 
-        # Frame 40: wave right again
-        right_forearm.rotation_euler = (0, math.radians(30), math.radians(-30))
-        right_forearm.keyframe_insert(data_path="rotation_euler", frame=40)
+    # Less extreme arm raise to avoid mesh distortion at elbow.
+    # -45X raises arm ~45° above horizontal (shoulder height wave).
+    # Forearm +45X bends elbow inward, Z rotation waves side to side.
 
-        # Frame 50: wave left again
-        right_forearm.rotation_euler = (0, math.radians(-30), math.radians(-30))
-        right_forearm.keyframe_insert(data_path="rotation_euler", frame=50)
+    # Frame 0: rest pose (T-pose)
+    set_euler_as_quat(right_arm, (0, 0, 0), 0)
+    set_euler_as_quat(right_forearm, (0, 0, 0), 0)
 
-        # Frame 60: arm back down
-        right_arm.rotation_euler = (0, 0, 0)
-        right_forearm.rotation_euler = (0, 0, 0)
-        right_arm.keyframe_insert(data_path="rotation_euler", frame=60)
-        right_forearm.keyframe_insert(data_path="rotation_euler", frame=60)
+    # Frame 10: raise right arm 45° above horizontal, bend elbow inward
+    set_euler_as_quat(right_arm, (-45, 0, 0), 10)
+    set_euler_as_quat(right_forearm, (-45, 0, 0), 10)
+
+    # Frame 20-50: wave by alternating forearm Z rotation (elbow stays bent)
+    set_euler_as_quat(right_forearm, (-45, 0, 25), 20)
+    set_euler_as_quat(right_forearm, (-45, 0, -25), 30)
+    set_euler_as_quat(right_forearm, (-45, 0, 25), 40)
+    set_euler_as_quat(right_forearm, (-45, 0, -25), 50)
+
+    # Frame 60: back to rest
+    set_euler_as_quat(right_arm, (0, 0, 0), 60)
+    set_euler_as_quat(right_forearm, (0, 0, 0), 60)
 
     bpy.ops.object.mode_set(mode='OBJECT')
 
@@ -134,20 +125,59 @@ def create_test_wave():
     bpy.context.scene.frame_start = 0
     bpy.context.scene.frame_end = 60
 
+    # CRITICAL: Remove fcurves for bones we didn't animate.
+    # The GLTF exporter bakes ALL bones into animation tracks. If the animation
+    # armature's rest pose differs from the body armature's rest pose (due to
+    # subdivision/helper removal), the extra tracks override the body's bone
+    # positions and create wrong poses. Only keep tracks for animated bones.
+    animated_bones = {"mixamorig:RightArm", "mixamorig:RightForeArm"}
+    action = armature_object.animation_data.action
+
+    # Blender 5.0: fcurves are in action.layers[].strips[].channelbags[].fcurves
+    removed = 0
+    for layer in action.layers:
+        for strip in layer.strips:
+            for channelbag in strip.channelbags:
+                to_remove = []
+                for fc in channelbag.fcurves:
+                    # data_path looks like 'pose.bones["mixamorig:RightArm"].rotation_quaternion'
+                    bone_match = False
+                    for bone_name in animated_bones:
+                        if bone_name in fc.data_path:
+                            bone_match = True
+                            break
+                    if not bone_match:
+                        to_remove.append(fc)
+                for fc in to_remove:
+                    channelbag.fcurves.remove(fc)
+                    removed += 1
+    print(f"  Removed {removed} fcurves for non-animated bones")
+
+    # Count remaining
+    remaining = 0
+    for layer in action.layers:
+        for strip in layer.strips:
+            for channelbag in strip.channelbags:
+                remaining += len(channelbag.fcurves)
+    print(f"  Remaining fcurves: {remaining} (should be 8 = 2 bones x 4 quaternion components)")
+
     print(f"  Created wave animation: 60 frames @ {fps}fps = 2.0s")
-    return armature
+    return armature_object
 
 
 def main():
     print("=" * 60)
-    print("Creating Test Animations")
+    print("Creating Test Animations (MPFB2 Mixamo rig)")
     print("=" * 60)
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     armature = create_test_wave()
+    if not armature:
+        print("ERROR: No armature created")
+        return
 
-    # Export as GLB
+    # Export as GLB (armature only, no mesh)
     bpy.ops.object.select_all(action='DESELECT')
     armature.select_set(True)
     bpy.context.view_layer.objects.active = armature
@@ -161,6 +191,9 @@ def main():
         export_skins=False,
         export_morph=False,
         export_yup=True,
+        export_force_sampling=True,  # Bake keyframes — non-sampled export corrupts rest-pose quaternions to [0,0,0,0]
+        export_optimize_animation_size=True,  # Remove redundant keyframes (safe with force_sampling)
+        export_optimize_animation_keep_anim_armature=False,  # Don't force full armature
     )
 
     file_size = os.path.getsize(out_path)

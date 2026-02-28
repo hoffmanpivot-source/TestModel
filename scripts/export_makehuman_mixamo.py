@@ -51,7 +51,13 @@ from bl_ext.blender_org.mpfb.services.humanservice import HumanService
 
 def build_vertex_index_map_from_mpfb2():
     """Create a temporary MPFB2 basemesh just to get the vertex index mapping.
-    Returns old_to_new dict and then cleans up the temp mesh."""
+    Returns (old_to_new, weight_old_to_new) where:
+    - old_to_new: maps body vertex indices to sequential new indices (for morph targets)
+    - weight_old_to_new: maps ALL vertex indices (including helpers) to nearest body
+      vertex's new index (for bone weight transfer via mhclo mappings)
+    """
+    from mathutils.kdtree import KDTree
+
     print("  Creating temporary MPFB2 mesh for vertex index mapping...")
     temp_mesh = HumanService.create_human(
         mask_helpers=True,
@@ -65,10 +71,11 @@ def build_vertex_index_map_from_mpfb2():
     if not vg:
         print("  WARNING: No 'body' vertex group")
         bpy.data.objects.remove(temp_mesh, do_unlink=True)
-        return {}
+        return {}, {}
 
     vg_idx = vg.index
     old_to_new = {}
+    body_verts = []  # (original_index, coordinate) for KDTree
     new_idx = 0
     for v in temp_mesh.data.vertices:
         in_body = False
@@ -78,14 +85,33 @@ def build_vertex_index_map_from_mpfb2():
                 break
         if in_body:
             old_to_new[v.index] = new_idx
+            body_verts.append((v.index, v.co.copy()))
             new_idx += 1
 
     print(f"  Vertex map: {len(old_to_new)} body vertices out of {len(temp_mesh.data.vertices)} total")
 
+    # Build weight_old_to_new: includes helper vertices mapped to nearest body vertex
+    weight_old_to_new = dict(old_to_new)  # start with body mappings
+    helper_count = 0
+
+    if body_verts:
+        kd = KDTree(len(body_verts))
+        for i, (orig_idx, co) in enumerate(body_verts):
+            kd.insert(co, orig_idx)
+        kd.balance()
+
+        for v in temp_mesh.data.vertices:
+            if v.index not in old_to_new:
+                _co, nearest_orig_idx, _dist = kd.find(v.co)
+                weight_old_to_new[v.index] = old_to_new[nearest_orig_idx]
+                helper_count += 1
+
+    print(f"  Weight map: {len(weight_old_to_new)} total ({helper_count} helpers mapped to nearest body vert)")
+
     # Clean up temp mesh
     bpy.data.objects.remove(temp_mesh, do_unlink=True)
 
-    return old_to_new
+    return old_to_new, weight_old_to_new
 
 
 def main():
@@ -145,7 +171,7 @@ def main():
 
     # STEP 2: Build vertex index mapping from a temporary MPFB2 mesh
     print("\nStep 2: Building vertex index mapping...")
-    old_to_new = build_vertex_index_map_from_mpfb2()
+    old_to_new, weight_old_to_new = build_vertex_index_map_from_mpfb2()
     if not old_to_new:
         print("ERROR: Failed to build vertex index map")
         return
@@ -159,7 +185,6 @@ def main():
         print(f"  WARNING: Vertex count mismatch! Shape keys may not align correctly.")
 
     # STEP 2b: Capture breast morphs from MPFB2 parametric system
-    # Need a fresh basemesh for this
     print("\nStep 2b: Capturing breast morphs from MPFB2...")
     temp_basemesh = HumanService.create_human(
         mask_helpers=True,
@@ -173,13 +198,76 @@ def main():
     breast_deltas = capture_breast_deltas_from_mpfb2(temp_basemesh)
     bpy.data.objects.remove(temp_basemesh, do_unlink=True)
 
-    # STEP 3: Add morph targets to Mixamo mesh
-    print("\nStep 3: Loading morph targets...")
+    # STEP 2c: Find target directory (needed for both clothing morphs and body morphs)
     target_dir = find_target_dir()
     if not target_dir:
         print("ERROR: Cannot find MPFB2 targets directory")
         return
 
+    # STEP 3: Export clothing BEFORE adding morph targets to body
+    # (Body mesh must have no shape keys so we can remove faces underneath clothing)
+    print("\nStep 3: Exporting clothing items with Mixamo bone weights...")
+    temp_basemesh3 = HumanService.create_human(
+        mask_helpers=True,
+        detailed_helpers=False,
+        extra_vertex_groups=True,
+        feet_on_ground=True,
+        scale=0.1,
+    )
+    bpy.context.view_layer.objects.active = temp_basemesh3
+    temp_basemesh3.select_set(True)
+
+    # Collect morph deltas for clothing transfer (from .target files, not body mesh)
+    all_morph_deltas = collect_all_morph_deltas(target_dir, breast_deltas)
+
+    # Export clothing with exact bone weight transfer via mhclo mappings
+    clothing_exported, clothing_delete_verts = export_clothing_items(
+        temp_basemesh3, all_morph_deltas, mixamo_armature,
+        weight_mesh_mappings=(mixamo_mesh, weight_old_to_new),
+    )
+    print(f"  Exported {len(clothing_exported)} clothing items: {', '.join(clothing_exported)}")
+
+    # Clean up temp basemesh
+    bpy.data.objects.remove(temp_basemesh3, do_unlink=True)
+
+    # NOTE: Body face removal is handled at RUNTIME via bone-based masking
+    # (ModelViewer.tsx dynamically hides body faces under clothing using skinIndex).
+    # Static removal was too aggressive (intersection too conservative for mixed
+    # categories like sleeveless+long-sleeve tops).
+    bpy.context.view_layer.objects.active = mixamo_mesh
+    mixamo_mesh.select_set(True)
+    print(f"  Total clothing delete_verts: {len(clothing_delete_verts)} (used for runtime masking)")
+
+    # STEP 3b: Load system assets (eyes, teeth, etc.)
+    print("\nStep 3b: Loading system assets...")
+    temp_basemesh2 = HumanService.create_human(
+        mask_helpers=True,
+        detailed_helpers=False,
+        extra_vertex_groups=True,
+        feet_on_ground=True,
+        scale=0.1,
+    )
+    system_assets = load_system_assets(temp_basemesh2)
+    print(f"  Loaded {len(system_assets)} system assets")
+    bpy.data.objects.remove(temp_basemesh2, do_unlink=True)
+
+    # Parent system assets to Mixamo armature (Head bone)
+    if system_assets:
+        print("  Parenting system assets to armature (Head bone)...")
+        for asset_obj in system_assets:
+            asset_obj.parent = mixamo_armature
+            asset_obj.parent_type = 'OBJECT'
+            mod = asset_obj.modifiers.new("Armature", 'ARMATURE')
+            mod.object = mixamo_armature
+            head_vg = asset_obj.vertex_groups.get("mixamorig:Head")
+            if not head_vg:
+                head_vg = asset_obj.vertex_groups.new(name="mixamorig:Head")
+            all_vert_indices = list(range(len(asset_obj.data.vertices)))
+            head_vg.add(all_vert_indices, 1.0, 'REPLACE')
+            print(f"    {asset_obj.name}: {len(all_vert_indices)} verts -> mixamorig:Head")
+
+    # STEP 4: Add morph targets to body (AFTER face removal, using reduced old_to_new)
+    print("\nStep 4: Loading morph targets...")
     bpy.context.view_layer.objects.active = mixamo_mesh
     mixamo_mesh.select_set(True)
 
@@ -212,36 +300,7 @@ def main():
 
     print(f"  Total morph targets: {loaded}")
 
-    # STEP 3b: Load system assets (eyes, teeth, etc.)
-    # Need a fresh basemesh for mhclo fitting
-    print("\nStep 3b: Loading system assets...")
-    temp_basemesh2 = HumanService.create_human(
-        mask_helpers=True,
-        detailed_helpers=False,
-        extra_vertex_groups=True,
-        feet_on_ground=True,
-        scale=0.1,
-    )
-    system_assets = load_system_assets(temp_basemesh2)
-    print(f"  Loaded {len(system_assets)} system assets")
-    bpy.data.objects.remove(temp_basemesh2, do_unlink=True)
-
-    # Parent system assets to Mixamo armature (Head bone)
-    if system_assets:
-        print("  Parenting system assets to armature (Head bone)...")
-        for asset_obj in system_assets:
-            asset_obj.parent = mixamo_armature
-            asset_obj.parent_type = 'OBJECT'
-            mod = asset_obj.modifiers.new("Armature", 'ARMATURE')
-            mod.object = mixamo_armature
-            head_vg = asset_obj.vertex_groups.get("mixamorig:Head")
-            if not head_vg:
-                head_vg = asset_obj.vertex_groups.new(name="mixamorig:Head")
-            all_vert_indices = list(range(len(asset_obj.data.vertices)))
-            head_vg.add(all_vert_indices, 1.0, 'REPLACE')
-            print(f"    {asset_obj.name}: {len(all_vert_indices)} verts -> mixamorig:Head")
-
-    # STEP 4: Zero all shape key values for export
+    # STEP 4b: Zero all shape key values for export
     if mixamo_mesh.data.shape_keys:
         for sk in mixamo_mesh.data.shape_keys.key_blocks[1:]:
             sk.value = 0.0
