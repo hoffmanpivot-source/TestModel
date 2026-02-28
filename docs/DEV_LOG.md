@@ -4,6 +4,24 @@ Persistent log of problems, fixes, and failed attempts. Never delete entries.
 
 ---
 
+## 2026-02-28: Runtime bone-based body masking under clothing (v0.0.64)
+
+- **Problem**: Skin poke-through returned after switching to Mixamo export pipeline. Body face removal under clothing (delete_verts) was missing from the new pipeline — regression from the pipeline switch.
+- **First attempt (v0.0.63): Static face removal at export time** — Too aggressive. Computed faces to remove based on clothing coverage, but intersection was too conservative for mixed clothing categories (e.g., sweater covers arms+torso, keyholetank only covers lower torso). Caused visible holes in the mesh. **Reverted to full body mesh.**
+- **Solution (v0.0.64): Runtime bone-based body masking in ModelViewer.tsx**
+  - **CLOTHING_BONE_COVERAGE**: Maps each clothing item to the bones it covers (e.g., sweater covers arms+torso bones, keyholetank only lower torso, wool pants covers leg bones, boots cover foot bones)
+  - **Conservative vertex hiding**: Only hides body vertices where ALL non-zero bone influences are in the hide set. This preserves boundary vertices (neck, chest transitions) where bones from both covered and uncovered regions have influence.
+  - **In-place index buffer rewrite with setDrawRange**: Rewrites the index buffer to skip triangles containing hidden vertices, uses `setDrawRange` for expo-gl compatibility (no buffer resize).
+  - **Bone name lookup**: Uses `mixamorig` prefix without colon in GLB (Mixamo auto-rig exports without the colon separator).
+- **Results**: Neck looks correct, chest visible with keyholetank, shoes/boots hide feet properly, per-item masking working correctly.
+- **Known issues after this fix**:
+  - Back poke-through on low-coverage tops (keyholetank back skin visible through tank)
+  - Sweater sleeve offset (clothing bone weights not perfectly matching body)
+  - Eye meshes slightly protruding from head
+- **Commit**: a4f643e (v0.0.64)
+
+---
+
 ## 2026-02-27: Switched to Mixamo auto-rigged skeleton (v0.0.48)
 
 - **Problem**: Per-bone rest-pose correction (v0.0.46) applied all known retargeting techniques but arms still played behind body. MPFB2's built-in Mixamo rig has rest poses differing by up to 163° from Mixamo's standard exported FBX skeleton, making JS/Blender correction impossible.
