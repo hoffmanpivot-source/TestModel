@@ -4,6 +4,18 @@ Persistent log of problems, fixes, and failed attempts. Never delete entries.
 
 ---
 
+## 2026-02-28: Fix boundary gaps at cuffs/hems, hide teeth/tongue (v0.0.65)
+
+- **Problem**: v0.0.64 bone-based masking hid body skin at clothing boundaries (sleeve cuffs, pant hems), creating visible gaps between clothing edges and the next body part (hands, boots). Also, teeth and tongue meshes protruded outside the head.
+- **Root cause (gaps)**: CLOTHING_BONE_COVERAGE for sweater/tshirt included Arm/ForeArm bones, so body skin was hidden all the way to the wrist. Similarly, pants coverage included Leg bones, hiding skin at the hem where it needs to bridge to boots.
+- **Fix (gaps)**: Removed Arm/ForeArm bones from sweater/tshirt CLOTHING_BONE_COVERAGE, removed Leg bones from pants CLOTHING_BONE_COVERAGE. Body skin now stays visible at sleeve openings and pant hems to bridge the gap naturally.
+- **Fix (depth)**: Increased body material polygonOffset from (1,1) to (2,2) to push body further behind clothing in depth buffer.
+- **Fix (teeth/tongue)**: Hidden teeth and tongue meshes at runtime (they protrude outside head geometry; needs proper export fix in Blender).
+- **Also added**: Bone name logging to body mask diagnostics for easier debugging.
+- **Commit**: 3ef370b (v0.0.65)
+
+---
+
 ## 2026-02-28: Runtime bone-based body masking under clothing (v0.0.64)
 
 - **Problem**: Skin poke-through returned after switching to Mixamo export pipeline. Body face removal under clothing (delete_verts) was missing from the new pipeline — regression from the pipeline switch.
