@@ -18,27 +18,30 @@ import { stripEmbeddedTextures } from "../utils/glbPreprocess";
 // Only bones listed here get masked when that item is equipped.
 // Key = mesh name from GLB (lowercase).
 const CLOTHING_BONE_COVERAGE: Record<string, string[]> = {
-  // Tops
+  // Tops — DON'T mask boundary bones (Arm/ForeArm) where cuffs end.
+  // Body skin stays visible at cuffs and polygonOffset pushes it behind
+  // clothing where they overlap, preventing gaps at sleeve openings.
   sweater: [
     "Spine", "Spine1", "Spine2",
     "LeftShoulder", "RightShoulder",
-    "LeftArm", "RightArm",
-    "LeftForeArm", "RightForeArm",
+    // LeftArm/RightArm/ForeArm excluded: cuffs don't fully cover arms,
+    // masking these creates disconnected sleeves
   ],
   tshirt: [
     "Spine", "Spine1", "Spine2",
     "LeftShoulder", "RightShoulder",
-    "LeftArm", "RightArm",
+    // Arms excluded: short sleeves, body skin bridges gap
   ],
   keyholetank: [
     "Spine", "Spine1",
     // Spine2 excluded: tank's neckline exposes upper chest
   ],
-  // Pants (all cover the same area)
-  pants: ["Hips", "LeftUpLeg", "RightUpLeg", "LeftLeg", "RightLeg"],
-  woolpants: ["Hips", "LeftUpLeg", "RightUpLeg", "LeftLeg", "RightLeg"],
-  harempants: ["Hips", "LeftUpLeg", "RightUpLeg", "LeftLeg", "RightLeg"],
-  cargopants: ["Hips", "LeftUpLeg", "RightUpLeg", "LeftLeg", "RightLeg"],
+  // Pants — DON'T mask Leg bones (lower leg) where hems end.
+  // Body skin at ankles bridges the gap to boots/shoes.
+  pants: ["Hips", "LeftUpLeg", "RightUpLeg"],
+  woolpants: ["Hips", "LeftUpLeg", "RightUpLeg"],
+  harempants: ["Hips", "LeftUpLeg", "RightUpLeg"],
+  cargopants: ["Hips", "LeftUpLeg", "RightUpLeg"],
   // Shoes (all cover feet)
   boots: ["LeftFoot", "RightFoot", "LeftToeBase", "RightToeBase"],
   ankleboots: ["LeftFoot", "RightFoot", "LeftToeBase", "RightToeBase"],
@@ -361,8 +364,8 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
                       roughness: 0.6,
                       metalness: 0.0,
                       polygonOffset: true,
-                      polygonOffsetFactor: 1,
-                      polygonOffsetUnits: 1,
+                      polygonOffsetFactor: 2,
+                      polygonOffsetUnits: 2,
                       clearcoat: 0.05,
                       clearcoatRoughness: 0.8,
                       sheen: 0.3,
@@ -396,14 +399,10 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
                       alphaTest: 0.1,
                       side: THREE.DoubleSide,
                     });
-                  } else if (name.includes("teeth") || name.includes("tooth")) {
-                    child.material = new THREE.MeshPhysicalMaterial({
-                      map: textures.teeth || null,
-                      roughness: 0.3,
-                      metalness: 0.0,
-                      clearcoat: 0.4,
-                      clearcoatRoughness: 0.3,
-                    });
+                  } else if (name.includes("teeth") || name.includes("tooth") || name.includes("tongue")) {
+                    // Hide teeth/tongue — they protrude outside the head mesh.
+                    // TODO: fix in export pipeline (scale down or reposition).
+                    child.visible = false;
                   }
                 });
               };
@@ -560,7 +559,8 @@ export function ModelViewer({ modelUri, clothingItems, currentAnimation, onModel
         }
       }
     }
-    console.log(`[BodyMask] Hide bones: ${hideBoneIndices.size} of ${skeleton.bones.length}`);
+    const hideBoneNames = Array.from(hideBoneIndices).map(i => skeleton.bones[i].name);
+    console.log(`[BodyMask] Hide bones: ${hideBoneIndices.size} of ${skeleton.bones.length}: ${hideBoneNames.join(", ")}`);
 
     // Mark vertices where ALL significant bone influences are in the hide set.
     // This is conservative: boundary vertices (e.g. neck with mixed Spine2+Neck
